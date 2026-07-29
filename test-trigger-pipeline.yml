@@ -1,22 +1,72 @@
-# Minimal Azure DevOps pipeline used ONLY to exercise the
-# pipeline-analysis-next-steps trigger wiring in a personal fork.
+# Mock Azure DevOps pipeline used ONLY to exercise the pipeline-analysis workflows in a personal
+# fork. It stands in for a real language pipeline (e.g. `python - pullrequest`) cheaply.
 #
-# It intentionally fails so GitHub emits an `azure-pipelines` check_suite
-# with conclusion == 'failure', which is what the trigger workflow listens for.
-# Delete this file once trigger validation is complete.
+# It is shaped deliberately to reproduce three properties of the real pipelines that the
+# fix-validation workflow depends on:
+#
+#   1. MULTI-STAGE. Azure DevOps publishes one GitHub check run per stage/job, named
+#      `<pipeline> (<stage> <job>)`, plus a rollup named `<pipeline>`. The fix-validation
+#      workflow compares those per-stage legs, so a single-job pipeline (which publishes only a
+#      rollup) cannot exercise the real code path.
+#
+#   2. CONDITIONALLY RED. The Analyze stage fails only while `ci-fail-marker.txt` exists at the
+#      repo root. That gives a failure an agent can actually repair - the fix is to delete the
+#      file - so the loop can genuinely go red -> green. A pipeline that always fails can never
+#      validate a fix.
+#
+#   3. TRIGGERED ON EVERY PR BRANCH. The automated fix is published as a draft PR whose base is
+#      the *contributor's* branch, not `main`. With `pr.branches.include: [main]` that PR would
+#      receive no CI at all and the validation loop would never wake up.
+#
+# The Verify stage always passes and runs independently of Analyze, so it stays green across both
+# runs - that gives the validation workflow a stable leg to prove its "no regressions" check
+# against.
 
-trigger: none          # don't run on branch pushes
+trigger: none          # never run on branch pushes; this pipeline is PR-only
 
-pr:                    # run on pull requests targeting main
+pr:
   branches:
     include:
-      - main
+      - '*'            # includes fix PRs targeting a contributor branch, not just main
+  drafts: true         # the automated fix PR is always a draft
 
 pool:
-  name: Default          # self-hosted agent pool
+  name: Default        # self-hosted agent pool; see setup-ado-agent.sh to bring an agent online
 
-steps:
-  - script: |
-      echo "Simulating a CI failure to test the pipeline-analysis trigger."
-      exit 1
-    displayName: "Fail on purpose"
+stages:
+  - stage: Analyze
+    displayName: Analyze
+    jobs:
+      - job: Analyze
+        displayName: Analyze
+        steps:
+          - checkout: self
+          - script: |
+              set -euo pipefail
+              MARKER="$(Build.SourcesDirectory)/ci-fail-marker.txt"
+              if [ -f "$MARKER" ]; then
+                echo "##vso[task.logissue type=error]Analyze failed: ci-fail-marker.txt is present at the repository root."
+                echo ""
+                echo "This is a simulated lint/analyze failure."
+                echo "To fix it, delete the file 'ci-fail-marker.txt' from the repository root."
+                echo ""
+                echo "--- marker contents ---"
+                cat "$MARKER"
+                exit 1
+              fi
+              echo "Analyze passed: no ci-fail-marker.txt present."
+            displayName: Check for failure marker
+
+  - stage: Verify
+    displayName: Verify
+    # `dependsOn: []` runs this stage in parallel with Analyze instead of after it. Without this,
+    # Verify would be SKIPPED whenever Analyze fails, so it would not report a check run on the
+    # red baseline and could not serve as the stable always-green comparison leg.
+    dependsOn: []
+    jobs:
+      - job: Verify
+        displayName: Verify
+        steps:
+          - checkout: self
+          - script: echo "Verify passed."
+            displayName: Always succeeds
