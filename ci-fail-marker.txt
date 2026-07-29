@@ -1,7 +1,0 @@
-This file makes the Analyze stage of test-trigger-pipeline.yml fail on purpose.
-
-It exists so the pipeline-analysis workflows have a failure that is genuinely
-repairable from the repository itself: the fix is simply to delete this file.
-
-Deleting it makes the Analyze stage pass, which is what lets the fix-validation
-workflow observe a real red -> green transition.
