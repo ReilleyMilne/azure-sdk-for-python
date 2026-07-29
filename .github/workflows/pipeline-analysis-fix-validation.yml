@@ -1,0 +1,286 @@
+# Pipeline Analysis - Fix Validation
+#
+# Closes the loop opened by `pipeline-analysis-auto-fix.md`. That workflow publishes an automated
+# fix to a `copilot-pipeline-fix/pr-<N>` branch and offers it as a draft PR against the original
+# PR's head branch. Draft PRs run the full Azure DevOps PR pipeline, so the fix gets validated by
+# CI for free - no manual pipeline queueing, no Azure DevOps credentials in this repo's Actions
+# trust boundary.
+#
+# This workflow watches the fix PR's CI. When it finishes, it compares the fix PR's per-leg results
+# against the original PR's, and only if the fix demonstrably worked does it append a suggestion to
+# the "[Pilot] PR Pipeline Failure Analysis" comment on the original PR.
+#
+# Why leg-level and not "is the build green":
+#   Azure Pipelines publishes each stage/job as its own check run (`python - pullrequest (Build
+#   Analyze)`) alongside a rollup (`python - pullrequest`). Judging by the rollup is wrong in both
+#   directions: it can go green because a flaky leg happened to pass, and it can stay red on an
+#   unrelated leg even though the fix worked. So the assertion is:
+#
+#       every leg that FAILED on the original PR now PASSES on the fix PR,
+#       and no leg that PASSED on the original PR now FAILS.
+#
+# Why the "leg missing" guard:
+#   The matrix is generated per-PR (`generate_job_matrix`) from the changed file set, so the fix PR
+#   can legitimately produce a different set of legs than the original. If a baseline-failing leg is
+#   absent from the fix run, the fix is UNPROVEN, not proven - that case is treated as inconclusive
+#   and stays silent.
+#
+# On anything other than a clean pass - inconclusive, regressed, still failing - this workflow does
+# nothing at all. No comment, no issue. Success-rate telemetry is deliberately out of scope here
+# and is handled separately.
+#
+# Note this workflow must NOT skip draft PRs: the fix PR is always a draft. It only ever acts on
+# head branches matching `copilot-pipeline-fix/pr-<N>`, which are created solely by the auto-fix
+# workflow, so it cannot be triggered by ordinary contributor branches.
+name: Pipeline Analysis - Fix Validation
+
+on:
+  check_run:
+    types: [completed]
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: write # append the validated-fix suggestion to the analysis comment
+
+concurrency:
+  # Serialize per fix branch so two completing check runs cannot double-post.
+  group: pipeline-analysis-fix-validation-${{ github.event.check_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate-fix:
+    # React only to the rollup Azure DevOps PR-CI check run (its per-stage jobs are
+    # `... - pullrequest (...)`, which do not end in `- pullrequest`). Both conclusions are
+    # evaluated: a red rollup may still carry a green target leg, and the regression check below
+    # is what decides.
+    if: >
+      github.event.check_run.check_suite.app.slug == 'azure-pipelines' &&
+      endsWith(github.event.check_run.name, '- pullrequest') &&
+      (github.event.check_run.conclusion == 'success' || github.event.check_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate automated fix and suggest it on the original PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CI_HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          PIPELINE: ${{ github.event.check_run.name }}
+          FIX_PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+
+          # The marker the analysis comment is built around (see pipeline-analysis-next-steps.md).
+          ANALYSIS_MARKER='[Pilot] PR Pipeline Failure Analysis'
+
+          # A repo can have several Azure DevOps pipelines reporting on the same commit. Azure
+          # DevOps names each per-stage check run `<pipeline name> (<stage> <job>)`, so legs are
+          # identified by that exact prefix rather than by "anything that is not a rollup" -
+          # otherwise a *different* pipeline's rollup would be mistaken for a leg of this one and
+          # its unrelated failure would block validation forever.
+          #
+          # Everything below is therefore scoped to PIPELINE, the pipeline whose completion woke
+          # this run. Other pipelines are validated by their own invocations of this workflow.
+
+          # Emit "<name>\t<conclusion>" for each completed check run of one azure-pipelines
+          # pipeline on a commit. `mode=legs` yields only per-stage legs, `mode=rollup` only the
+          # pipeline's own rollup.
+          fetch_checks() {
+            local sha="$1" pipeline="$2" mode="$3" raw=""
+            # `|| true`: a transient API failure must leave this workflow silent, not red.
+            raw="$(gh api --paginate "repos/$REPOSITORY/commits/$sha/check-runs?per_page=100" \
+              --jq '.check_runs[]
+                    | select(.app.slug == "azure-pipelines")
+                    | select(.status == "completed")
+                    | [.name, .conclusion]
+                    | @tsv' 2>/dev/null || true)"
+            [ -z "$raw" ] && return 0
+            while IFS=$'\t' read -r name conclusion; do
+              [ -z "$name" ] && continue
+              case "$mode" in
+                legs)   case "$name" in "$pipeline ("*")") ;; *) continue ;; esac ;;
+                rollup) [ "$name" = "$pipeline" ] || continue ;;
+              esac
+              printf '%s\t%s\n' "$name" "$conclusion"
+            done <<< "$raw"
+          }
+
+          fetch_legs()   { fetch_checks "$1" "$PIPELINE" legs;   }
+          fetch_rollup() { fetch_checks "$1" "$PIPELINE" rollup; }
+
+          conclusion_of() { # conclusion_of <legs-file> <leg-name>
+            awk -F'\t' -v n="$2" '$1 == n { print $2; exit }' "$1"
+          }
+
+          # --- Resolve the fix PR ------------------------------------------------------------
+          if [ -z "${FIX_PR_NUMBER:-}" ]; then
+            FIX_PR_NUMBER="$(gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" \
+              --jq ".[] | select(.head.sha == \"$CI_HEAD_SHA\") | [.updated_at, .number] | @tsv" |
+              sort -r | sed -n '1s/^[^\t]*\t//p')"
+          fi
+
+          if [ -z "${FIX_PR_NUMBER:-}" ]; then
+            echo "No pull request associated with this check run; nothing to do."
+            exit 0
+          fi
+
+          fix_pr_json="$(gh pr view "$FIX_PR_NUMBER" --repo "$REPOSITORY" \
+            --json headRefName,headRefOid,state,url 2>/dev/null || true)"
+          if [ -z "$fix_pr_json" ]; then
+            echo "Could not read PR #$FIX_PR_NUMBER; nothing to do."
+            exit 0
+          fi
+
+          fix_head_ref="$(jq -r '.headRefName' <<<"$fix_pr_json")"
+          fix_head_oid="$(jq -r '.headRefOid'  <<<"$fix_pr_json")"
+          fix_state="$(   jq -r '.state'       <<<"$fix_pr_json")"
+          fix_pr_url="$(  jq -r '.url'         <<<"$fix_pr_json")"
+
+          # Only ever act on branches produced by the auto-fix workflow.
+          case "$fix_head_ref" in
+            copilot-pipeline-fix/pr-*) ;;
+            *) echo "PR #$FIX_PR_NUMBER (branch '$fix_head_ref') is not an automated fix branch; nothing to do."; exit 0 ;;
+          esac
+
+          if [ "$fix_state" != "OPEN" ]; then
+            echo "Fix PR #$FIX_PR_NUMBER is $fix_state; nothing to do."
+            exit 0
+          fi
+
+          # Do not judge a superseded commit.
+          if [ "$CI_HEAD_SHA" != "$fix_head_oid" ]; then
+            echo "Check run SHA $CI_HEAD_SHA no longer matches fix PR head $fix_head_oid; nothing to do."
+            exit 0
+          fi
+
+          # `copilot-pipeline-fix/pr-<N>` encodes the PR the fix is for.
+          original_pr="${fix_head_ref#copilot-pipeline-fix/pr-}"
+          if ! [[ "$original_pr" =~ ^[0-9]+$ ]]; then
+            echo "Could not parse an original PR number from branch '$fix_head_ref'; nothing to do."
+            exit 0
+          fi
+
+          original_json="$(gh pr view "$original_pr" --repo "$REPOSITORY" \
+            --json headRefOid,state 2>/dev/null || true)"
+          if [ -z "$original_json" ]; then
+            echo "Could not read original PR #$original_pr; nothing to do."
+            exit 0
+          fi
+
+          original_state="$(jq -r '.state'      <<<"$original_json")"
+          original_sha="$(  jq -r '.headRefOid' <<<"$original_json")"
+          if [ "$original_state" != "OPEN" ]; then
+            echo "Original PR #$original_pr is $original_state; nothing to do."
+            exit 0
+          fi
+
+          echo "Validating fix PR #$FIX_PR_NUMBER (branch $fix_head_ref) against original PR #$original_pr."
+
+          # --- Compare results ---------------------------------------------------------------
+          fetch_legs "$original_sha" > baseline.tsv
+          fetch_legs "$CI_HEAD_SHA"  > candidate.tsv
+          echo "Pipeline '$PIPELINE': baseline legs $(wc -l < baseline.tsv), candidate legs $(wc -l < candidate.tsv)."
+
+          # Single-stage pipelines publish no per-stage check runs at all, only their own rollup.
+          # In that case fall back to comparing the rollup. This is a weaker signal - it cannot
+          # distinguish "the fix worked" from "an unrelated flake cleared" - so it is used only
+          # when there is genuinely nothing finer available on either side.
+          COMPARISON="per-stage legs"
+          if [ ! -s baseline.tsv ] && [ ! -s candidate.tsv ]; then
+            fetch_rollup "$original_sha" > baseline.tsv
+            fetch_rollup "$CI_HEAD_SHA"  > candidate.tsv
+            COMPARISON="pipeline rollup (this pipeline publishes no per-stage checks)"
+            echo "No per-stage legs on either side; falling back to rollup comparison."
+          fi
+
+          if [ ! -s baseline.tsv ] || [ ! -s candidate.tsv ]; then
+            echo "Missing results on one side; inconclusive, staying silent."
+            exit 0
+          fi
+
+          baseline_failures="$(awk -F'\t' '$2 == "failure" { print $1 }' baseline.tsv)"
+          if [ -z "$baseline_failures" ]; then
+            echo "Original PR #$original_pr has no failing legs at $original_sha; nothing to prove."
+            exit 0
+          fi
+
+          # Every baseline failure must now pass. A leg that is absent from the fix run is
+          # unproven, not fixed.
+          fixed_legs=""
+          while IFS= read -r leg; do
+            [ -z "$leg" ] && continue
+            candidate_conclusion="$(conclusion_of candidate.tsv "$leg")"
+            if [ -z "$candidate_conclusion" ]; then
+              echo "Leg '$leg' failed at baseline but is absent from the fix run; inconclusive, staying silent."
+              exit 0
+            fi
+            if [ "$candidate_conclusion" != "success" ]; then
+              echo "Leg '$leg' is still '$candidate_conclusion' on the fix run; staying silent."
+              exit 0
+            fi
+            fixed_legs="${fixed_legs}${leg}"$'\n'
+          done <<< "$baseline_failures"
+
+          # No leg that passed at baseline may now fail. Only legs present in both runs are
+          # compared, so matrix expansion is not mistaken for a regression.
+          while IFS=$'\t' read -r leg conclusion; do
+            [ "$conclusion" = "success" ] || continue
+            candidate_conclusion="$(conclusion_of candidate.tsv "$leg")"
+            if [ -n "$candidate_conclusion" ] && [ "$candidate_conclusion" != "success" ]; then
+              echo "Leg '$leg' regressed from success to '$candidate_conclusion' on the fix run; staying silent."
+              exit 0
+            fi
+          done < baseline.tsv
+
+          echo "Fix validated: every failing leg now passes and nothing regressed."
+
+          # --- Suggest the fix on the original PR --------------------------------------------
+          # Idempotency marker: never suggest the same fix PR twice.
+          suggestion_marker="<!-- pipeline-fix-validated:${FIX_PR_NUMBER} -->"
+
+          # `--paginate` emits one JSON array per page, so stream the elements and re-slurp them
+          # into a single array that jq can query as a whole.
+          comments_json="$(gh api --paginate "repos/$REPOSITORY/issues/$original_pr/comments?per_page=100" \
+            --jq '.[]' | jq -s '.')"
+
+          if jq -e --arg m "$suggestion_marker" 'any(.[]; .body != null and (.body | contains($m)))' \
+               <<<"$comments_json" >/dev/null; then
+            echo "Fix PR #$FIX_PR_NUMBER has already been suggested on PR #$original_pr; nothing to do."
+            exit 0
+          fi
+
+          fixed_leg_list="$(printf '%s' "$fixed_legs" | sed '/^$/d' | sed 's/^/- `/; s/$/`/')"
+
+          {
+            printf '%s\n\n' "$suggestion_marker"
+            printf '### ✅ An automated fix for this failure passed CI\n\n'
+            printf '%s proposes a fix for the failure analyzed above, and its pipeline run has\n' "$fix_pr_url"
+            printf 'confirmed it:\n\n'
+            printf '%s\n\n' "$fixed_leg_list"
+            printf 'These failed on this PR and now pass on the fix branch, with nothing else\n'
+            printf 'regressing (compared by %s).\n\n' "$COMPARISON"
+            printf 'Merging that pull request applies the fix to this one. Review it as you would any\n'
+            printf 'other change - it is a suggestion, not an approval.\n'
+          } > suggestion.md
+
+          # Prefer appending to the existing analysis comment so the suggestion lives with the
+          # failure it addresses, and is collapsed along with it when a newer analysis supersedes
+          # both. Fall back to a standalone comment if that comment is not present.
+          analysis_comment_id="$(jq -r --arg m "$ANALYSIS_MARKER" \
+            '[.[] | select(.body != null and (.body | contains($m)))] | last | .id // empty' \
+            <<<"$comments_json")"
+
+          if [ -n "$analysis_comment_id" ]; then
+            jq -r --arg m "$ANALYSIS_MARKER" \
+              '[.[] | select(.body != null and (.body | contains($m)))] | last | .body' \
+              <<<"$comments_json" > existing-body.md
+            printf '\n\n---\n\n' >> existing-body.md
+            cat suggestion.md >> existing-body.md
+
+            gh api -X PATCH "repos/$REPOSITORY/issues/comments/$analysis_comment_id" \
+              -F body=@existing-body.md >/dev/null
+            echo "Appended the validated fix suggestion to analysis comment $analysis_comment_id on PR #$original_pr."
+          else
+            gh pr comment "$original_pr" --repo "$REPOSITORY" --body-file suggestion.md
+            echo "Analysis comment not found; posted a standalone suggestion on PR #$original_pr."
+          fi
