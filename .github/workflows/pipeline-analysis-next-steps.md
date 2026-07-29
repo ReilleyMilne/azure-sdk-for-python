@@ -73,15 +73,27 @@ steps:
     env:
       GITHUB_TOKEN: ${{ github.token }}
       PR_URL: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+      PR_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
+      # Fork-harness escape hatch; see pipeline-analysis-auto-fix.md for the full rationale.
+      # `azsdk ci analyze` only resolves builds in the hardcoded `dev.azure.com/azure-sdk` org, so
+      # a fork whose pipelines live elsewhere gets "No failed Azure Pipeline builds found". Setting
+      # the `PIPELINE_ANALYSIS_SOURCE_PR` repository variable sources the analysis from an upstream
+      # PR instead; the comment is still posted on this repository's PR. Unset in production.
+      ANALYSIS_SOURCE_PR: ${{ vars.PIPELINE_ANALYSIS_SOURCE_PR }}
     run: |
       set -uo pipefail
+      analysis_url="${ANALYSIS_SOURCE_PR:-$PR_URL}"
+      if [ "$analysis_url" != "$PR_URL" ]; then
+        echo "::notice::Harness mode - sourcing pipeline analysis from $analysis_url instead of $PR_URL."
+      fi
       # `azsdk ci analyze` exits non-zero both when it finds no failing builds (it sets a
       # "No failed Azure Pipeline builds found ..." response error) and on real auth/network/CLI
       # errors. Only the former is an acceptable no-op; every other non-zero exit must fail this
       # step so the run surfaces the problem instead of the agent silently treating an error as
       # "nothing to report" and finishing green.
       exit_code=0
-      azsdk ci analyze "$PR_URL" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
+      azsdk ci analyze "$analysis_url" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
       echo "azsdk ci analyze exit code: $exit_code"
       echo "----- pipeline-analysis.txt -----"
       # The file holds PR-controlled build output. Prefix any line that looks like a GitHub
@@ -96,6 +108,19 @@ steps:
           exit "$exit_code"
         fi
       fi
+
+      # This repository's own failing checks, read from the GitHub Checks API rather than from
+      # Azure DevOps. This works regardless of which DevOps organization the build ran in, so in
+      # harness mode it is the only signal describing a failure actually present on this PR.
+      {
+        echo
+        echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} ====="
+        gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
+          --jq '.check_runs[]
+                | select(.conclusion == "failure")
+                | "- \(.name): \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
+          2>/dev/null || echo "(could not read check runs)"
+      } >> "$GITHUB_WORKSPACE/pipeline-analysis.txt"
 
 tools:
   github:
@@ -140,8 +165,17 @@ workspace root. Your job is to turn that raw tool output into one concise, actio
 
 ## Step 0 - Read the analysis and validate
 
-1. Read `pipeline-analysis.txt` (it is in the current working directory).
-2. If the file is empty, or contains `No failed Azure Pipeline builds found`, or otherwise
+1. Read `pipeline-analysis.txt` (it is in the current working directory). It has up to two parts:
+   the `azsdk ci analyze` output, and a trailing
+   `===== Failing checks on <repo> PR #<n> =====` section listing this PR's own failing checks
+   read from the GitHub Checks API.
+   - **Harness mode.** If the run log said `Harness mode - sourcing pipeline analysis from ...`,
+     the `azsdk` part describes a build in a *different* repository, because `azsdk` can only read
+     the `dev.azure.com/azure-sdk` organization. Do **not** present it as this PR's failure. Base
+     the comment on the trailing local-checks section, and say plainly which build you are
+     describing.
+2. If the file is empty, or contains `No failed Azure Pipeline builds found` with no usable
+   local-checks section, or otherwise
    shows no real pipeline/test failures, then there is nothing to report: use the `noop` safe
    output and stop. Do **not** post a comment in that case.
 3. Stale-commit guard: if `${{ github.event.inputs.ci_head_sha }}` is non-empty, fetch

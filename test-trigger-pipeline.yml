@@ -31,7 +31,7 @@ pr:
   drafts: true         # the automated fix PR is always a draft
 
 pool:
-  name: Default        # self-hosted agent pool
+  name: Default        # self-hosted agent pool; see setup-ado-agent.sh to bring an agent online
 
 stages:
   - stage: Analyze

@@ -71,16 +71,44 @@ steps:
     env:
       GITHUB_TOKEN: ${{ github.token }}
       PR_URL: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+      PR_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
+      # Fork-harness escape hatch. `azsdk ci analyze` resolves builds against the hardcoded
+      # `https://dev.azure.com/azure-sdk` organization, so in a personal fork whose pipelines live
+      # in a different DevOps org it can never see them and always reports "No failed Azure
+      # Pipeline builds found". Setting the `PIPELINE_ANALYSIS_SOURCE_PR` repository variable to an
+      # upstream PR URL points the *analysis* at a real failing Azure build while every write - the
+      # checkout, the fix branch, the pull request - still happens in this repository.
+      # Leave the variable unset in production: analysis then targets this repo's own PR.
+      ANALYSIS_SOURCE_PR: ${{ vars.PIPELINE_ANALYSIS_SOURCE_PR }}
     run: |
       set -uo pipefail
+      analysis_url="${ANALYSIS_SOURCE_PR:-$PR_URL}"
+      if [ "$analysis_url" != "$PR_URL" ]; then
+        echo "::notice::Harness mode - sourcing pipeline analysis from $analysis_url instead of $PR_URL."
+      fi
       exit_code=0
-      azsdk ci analyze "$PR_URL" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
+      azsdk ci analyze "$analysis_url" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
       echo "azsdk ci analyze exit code: $exit_code"
       sed 's/^::/ ::/' "$GITHUB_WORKSPACE/pipeline-analysis.txt"
       if [ "$exit_code" -ne 0 ] && ! grep -qF "No failed Azure Pipeline builds found" "$GITHUB_WORKSPACE/pipeline-analysis.txt"; then
         echo "::error::azsdk ci analyze failed (exit $exit_code); failing the step."
         exit "$exit_code"
       fi
+
+      # This repository's own failing checks, read from the GitHub Checks API rather than from
+      # Azure DevOps. This works regardless of which DevOps organization the build ran in, so in
+      # harness mode it is the only signal that describes a failure actually present in this
+      # checkout. Appended as a clearly separated section so the agent can tell the two apart.
+      {
+        echo
+        echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} ====="
+        gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
+          --jq '.check_runs[]
+                | select(.conclusion == "failure")
+                | "- \(.name): \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
+          2>/dev/null || echo "(could not read check runs)"
+      } >> "$GITHUB_WORKSPACE/pipeline-analysis.txt"
 
 tools:
   github:
@@ -142,9 +170,17 @@ targeting that branch. You are not merging anything - the PR author decides.
 
 ## Step 0 - Read the analysis and decide whether to act
 
-1. Read `pipeline-analysis.txt`.
-2. If it is empty, contains `No failed Azure Pipeline builds found`, or shows no real failure, use
-   the `noop` safe output and stop.
+1. Read `pipeline-analysis.txt`. It has up to two parts: the `azsdk ci analyze` output, and a
+   trailing `===== Failing checks on <repo> PR #<n> =====` section listing this PR's own failing
+   checks from the GitHub Checks API.
+   - **Harness mode.** If the run log said `Harness mode - sourcing pipeline analysis from ...`,
+     the `azsdk` part describes a build in a *different* repository, because `azsdk` can only read
+     the `dev.azure.com/azure-sdk` organization. Treat it as reference material only. Fix it **only
+     if the identical defect demonstrably exists in this checkout** - verify by opening the file
+     before changing it. Otherwise base your fix on the trailing local-checks section, which is the
+     part that describes this repository.
+2. If it is empty, contains `No failed Azure Pipeline builds found` with no usable local-checks
+   section, or shows no real failure, use the `noop` safe output and stop.
 3. Stale-commit guard: if `${{ github.event.inputs.ci_head_sha }}` is non-empty, compare it with
    the PR's current head SHA. If they differ, the run is for a superseded commit - `noop` and stop.
 4. **Only proceed if the failure is deterministically fixable from the repository itself** -
