@@ -157,8 +157,11 @@ jobs:
             exit 0
           fi
 
-          # `copilot-pipeline-fix/pr-<N>` encodes the PR the fix is for.
+          # `copilot-pipeline-fix/pr-<N>` encodes the PR the fix is for. The branch may carry a
+          # `-<hash>` uniqueness suffix appended by the safe-outputs branch creator, so take only
+          # the leading numeric component.
           original_pr="${fix_head_ref#copilot-pipeline-fix/pr-}"
+          original_pr="${original_pr%%-*}"
           if ! [[ "$original_pr" =~ ^[0-9]+$ ]]; then
             echo "Could not parse an original PR number from branch '$fix_head_ref'; nothing to do."
             exit 0
