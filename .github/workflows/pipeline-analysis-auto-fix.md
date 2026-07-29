@@ -179,8 +179,15 @@ targeting that branch. You are not merging anything - the PR author decides.
      if the identical defect demonstrably exists in this checkout** - verify by opening the file
      before changing it. Otherwise base your fix on the trailing local-checks section, which is the
      part that describes this repository.
+   - **In harness mode you must still produce a fix.** The local-checks section is authoritative.
+     Do **not** `noop` merely because the upstream `azsdk` defect is absent from this checkout -
+     that is the expected case. Find the local cause and fix it. Concretely: if a stage named
+     `Analyze` failed and a file named `ci-fail-marker.txt` exists at the repository root, that
+     marker file *is* the failure (`test-trigger-pipeline.yml` fails the stage whenever it is
+     present) - delete it and publish that as the fix.
 2. If it is empty, contains `No failed Azure Pipeline builds found` with no usable local-checks
-   section, or shows no real failure, use the `noop` safe output and stop.
+   section, or shows no real failure, use the `noop` safe output and stop. In harness mode, treat
+   `noop` as a last resort: only take it if you genuinely cannot identify any local cause.
 3. Stale-commit guard: if `${{ github.event.inputs.ci_head_sha }}` is non-empty, compare it with
    the PR's current head SHA. If they differ, the run is for a superseded commit - `noop` and stop.
 4. **Only proceed if the failure is deterministically fixable from the repository itself** -
