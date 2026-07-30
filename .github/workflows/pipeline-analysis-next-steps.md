@@ -11,6 +11,7 @@
 # After editing this file, run 'gh aw compile pipeline-analysis-next-steps' to regenerate the
 # lock file.
 description: "Analyze a pull request's failing Azure DevOps pipeline with the azsdk analyze tool and post a Copilot-authored 'Pipeline Analysis Next Steps' comment."
+run-name: "Pipeline Analysis - Next Steps / PR #${{ github.event.inputs.pr_number }} / ${{ github.event.inputs.ci_head_sha }}"
 
 on:
   workflow_dispatch:

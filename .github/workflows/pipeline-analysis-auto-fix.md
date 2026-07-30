@@ -5,9 +5,10 @@
 # Azure DevOps CI run, this one attempts to *fix* it.
 #
 # Delivery model: the fix is NOT pushed onto the contributor's branch. The agent's changes are
-# published to a separate `copilot-pipeline-fix/*` branch and offered as a draft pull request whose
-# base is the original PR's head branch. The PR author reviews it and merges it into their own PR
-# if they want it. Nothing lands without a human merge.
+# published to a separate `copilot-pipeline-fix/*` branch and offered as a draft pull request.
+# The PR initially targets the original PR's CI-enabled base branch so Azure DevOps PR CI runs.
+# After CI proves the fix, `pipeline-analysis-fix-validation.yml` retargets the same PR to the
+# original PR's head branch. Nothing lands without a human merge.
 #
 # Fork PRs are skipped by the dispatcher: the head branch lives in the fork, so a base-repo
 # workflow cannot push a branch there or open a PR against it.
@@ -18,6 +19,7 @@
 # After editing this file, run 'gh aw compile pipeline-analysis-auto-fix' to regenerate the
 # lock file.
 description: "Attempt an automated fix for a pull request's failing Azure DevOps pipeline and publish it as a draft PR targeting the original PR's branch."
+run-name: "Pipeline Analysis - Auto Fix / PR #${{ github.event.inputs.pr_number }} / ${{ github.event.inputs.ci_head_sha }}"
 
 on:
   workflow_dispatch:
@@ -27,12 +29,16 @@ on:
         required: true
         type: string
       pr_head_ref:
-        description: "Head branch of that pull request; the fix PR targets this branch"
+        description: "Head branch of that pull request; the validated fix PR is retargeted here"
         required: true
         type: string
       ci_head_sha:
-        description: "Head SHA of the completed PR-CI check run, for stale-commit detection"
-        required: false
+        description: "Head SHA of the completed PR-CI check run; identifies the validation baseline"
+        required: true
+        type: string
+      validation_base_ref:
+        description: "CI-enabled base branch the draft fix PR initially targets"
+        required: true
         type: string
 
 if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -54,10 +60,10 @@ network:
     - aka.ms
     - "*.in.applicationinsights.azure.com"
 
-# Full checkout of the PR's head branch: unlike the analysis workflow, this agent must read and
-# modify the PR's actual code.
+# Check out the exact failing commit, not the mutable branch. The stale guard below separately
+# verifies that this commit is still the PR head before the agent publishes anything.
 checkout:
-  ref: ${{ github.event.inputs.pr_head_ref }}
+  ref: ${{ github.event.inputs.ci_head_sha }}
 
 steps:
   - name: Install azsdk CLI
@@ -135,11 +141,13 @@ tools:
 safe-outputs:
   create-pull-request:
     title-prefix: "[pipeline-fix] "
-    labels: [automated, pipeline-fix]
+    labels: [automated]
     draft: true
     max: 1
-    # The fix PR targets the original PR's branch, so merging it lands the fix in that PR.
-    base-branch: ${{ github.event.inputs.pr_head_ref }}
+    # Carry routing metadata in a compiler-controlled prefix instead of relying on the agent.
+    branch-prefix: "copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/"
+    # Validate against the original PR's base first. Validation retargets to the contributor branch.
+    base-branch: ${{ github.event.inputs.validation_base_ref }}
     # Keep generated branches under one prefix so the 7-day cleanup workflow can find them.
     allowed-branches:
       - "copilot-pipeline-fix/*"
@@ -168,8 +176,10 @@ A CI pipeline failed on pull request **#${{ github.event.inputs.pr_number }}**. 
 branch (`${{ github.event.inputs.pr_head_ref }}`) is checked out in your workspace, and a setup
 step has already written the failure analysis to **`pipeline-analysis.txt`**.
 
-Your job is to attempt a **narrow, high-confidence fix** and publish it as a draft pull request
-targeting that branch. You are not merging anything - the PR author decides.
+Your job is to attempt a **narrow, high-confidence fix** and publish it as a draft pull request.
+The PR initially targets `${{ github.event.inputs.validation_base_ref }}` so CI runs. A separate
+workflow retargets it to `${{ github.event.inputs.pr_head_ref }}` only after validation passes.
+You are not merging anything - the PR author decides.
 
 ## Step 0 - Read the analysis and decide whether to act
 
@@ -233,20 +243,24 @@ from the `view`/`read_file` tools, so a shell read is not counted.
 
 Emit exactly one `create-pull-request` safe output.
 
-- Use a source branch named `copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}`.
+- Use `fix` as the source branch name. The safe-output handler prepends the immutable
+  `copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/`
+  routing prefix and may append a uniqueness suffix.
 - Title: a one-line summary of the fix.
 - Body must contain:
   - which pipeline check failed, with the Azure DevOps build link from the analysis;
   - the root cause in one or two sentences;
   - what you changed and why it addresses that specific failure;
   - what you ran to verify, or an explicit statement that it is unverified;
-  - a closing note that this PR targets `${{ github.event.inputs.pr_head_ref }}` and that merging
-    it applies the fix to PR #${{ github.event.inputs.pr_number }}.
+  - a closing note that the PR temporarily targets `${{ github.event.inputs.validation_base_ref }}`
+    for CI validation, must not be merged there, and will be retargeted automatically to
+    `${{ github.event.inputs.pr_head_ref }}` if validation passes.
 
 ## Constraints (non-negotiable)
 
-1. **One PR, targeting the contributor's branch.** Never push directly to
-   `${{ github.event.inputs.pr_head_ref }}`, and never open a PR against the default branch.
+1. **One draft PR, initially targeting the validation branch.** Never push directly to
+   `${{ github.event.inputs.pr_head_ref }}`. The validation workflow, not the agent, retargets it
+   after CI passes.
 2. **No speculative fixes.** If you are not confident the change addresses the reported failure,
    `noop`. Silence is an acceptable outcome; a plausible-looking wrong patch is not.
 3. **Ground every claim in `pipeline-analysis.txt` or in output you actually produced.** Do not
