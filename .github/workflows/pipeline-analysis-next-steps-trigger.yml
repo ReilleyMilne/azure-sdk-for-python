@@ -17,6 +17,10 @@
 # pipelines such as `python - cosmos - ci`, so the trigger accepts any failed, non-parenthesized
 # Azure Pipelines check. Run-name deduplication ensures multiple failed pipelines on the same
 # commit produce only one analysis and one auto-fix attempt.
+#
+# Auto-fix rollout is controlled by the `PIPELINE_ANALYSIS_AUTO_FIX_MODE` repository variable:
+# unset/`disabled` analyzes only, `pilot` fixes PRs labeled `pipeline-auto-fix`, and `enabled`
+# fixes every eligible same-repository PR. Unknown values fail closed.
 name: Pipeline Analysis - Next Steps Trigger
 
 on:
@@ -48,6 +52,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AUTO_FIX_MODE: ${{ vars.PIPELINE_ANALYSIS_AUTO_FIX_MODE }}
           PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
           CI_HEAD_SHA: ${{ github.event.check_run.head_sha }}
         run: |
@@ -64,27 +69,32 @@ jobs:
               sed -n '1s/^[^\t]*\t//p'
           }
 
-          workflow_run_titles() {
+          workflow_runs() {
             local workflow="$1"
             gh run list \
               --repo "$REPOSITORY" \
               --workflow "$workflow" \
               --event workflow_dispatch \
               --limit 1000 \
-              --json displayTitle \
-              --jq '.[].displayTitle'
+              --json databaseId,displayTitle,status,conclusion
           }
 
-          wait_for_workflow_run() {
+          find_workflow_run_id() {
             local workflow="$1"
             local run_title="$2"
-            local existing_run_titles
+            workflow_runs "$workflow" |
+              jq -r --arg title "$run_title" \
+                '[.[] | select(.displayTitle == $title)] | first | .databaseId // empty'
+          }
+
+          wait_for_workflow_run_id() {
+            local workflow="$1"
+            local run_title="$2"
+            local run_id
             for _ in {1..10}; do
-              if ! existing_run_titles="$(workflow_run_titles "$workflow")"; then
-                echo "::error::Could not list runs for $workflow after dispatch."
-                return 1
-              fi
-              if grep -qxF "$run_title" <<<"$existing_run_titles"; then
+              run_id="$(find_workflow_run_id "$workflow" "$run_title")"
+              if [ -n "$run_id" ]; then
+                printf '%s\n' "$run_id"
                 return 0
               fi
               sleep 2
@@ -93,11 +103,31 @@ jobs:
             return 1
           }
 
+          wait_for_successful_workflow_run() {
+            local run_id="$1"
+            local run_json status conclusion
+            for _ in {1..180}; do
+              run_json="$(gh run view "$run_id" --repo "$REPOSITORY" --json status,conclusion)"
+              status="$(jq -r '.status' <<<"$run_json")"
+              conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
+              if [ "$status" = "completed" ]; then
+                if [ "$conclusion" = "success" ]; then
+                  return 0
+                fi
+                echo "::error::Analysis run $run_id concluded '$conclusion'; auto-fix will not run."
+                return 1
+              fi
+              sleep 10
+            done
+            echo "::error::Analysis run $run_id did not complete within the dispatcher timeout."
+            return 1
+          }
+
           dispatch_next_steps() {
             local pr_number="$1"
             local conclusion="$2"
             local head_sha="$3"
-            local pr_json current_head_sha head_ref base_ref is_fork
+            local pr_json current_head_sha head_ref base_ref is_fork labels_json
 
             if [ -z "$pr_number" ]; then
               echo "No pull request associated with this check run; nothing to do."
@@ -105,7 +135,7 @@ jobs:
             fi
 
             pr_json="$(gh pr view "$pr_number" --repo "$REPOSITORY" \
-              --json baseRefName,headRefName,headRefOid,isCrossRepository,isDraft)"
+              --json baseRefName,headRefName,headRefOid,isCrossRepository,isDraft,labels)"
             if [ "$(jq -r '.isDraft' <<<"$pr_json")" = "true" ]; then
               echo "Skipping draft PR #$pr_number."
               return 0
@@ -128,14 +158,15 @@ jobs:
             esac
             base_ref="$(jq -r '.baseRefName' <<<"$pr_json")"
             is_fork="$(jq -r '.isCrossRepository' <<<"$pr_json")"
+            labels_json="$(jq -c '[.labels[].name]' <<<"$pr_json")"
 
             local aw_context
             aw_context="$(printf '{"item_type":"pull_request","item_number":%s}' "$pr_number")"
 
-            local analysis_run_title existing_run_titles
+            local analysis_run_title analysis_run_id
             analysis_run_title="Pipeline Analysis - Next Steps / PR #$pr_number / $head_sha"
-            existing_run_titles="$(workflow_run_titles pipeline-analysis-next-steps.lock.yml)"
-            if grep -qxF "$analysis_run_title" <<<"$existing_run_titles"; then
+            analysis_run_id="$(find_workflow_run_id pipeline-analysis-next-steps.lock.yml "$analysis_run_title")"
+            if [ -n "$analysis_run_id" ]; then
               echo "Pipeline analysis already dispatched for PR #$pr_number at $head_sha."
             else
               gh workflow run pipeline-analysis-next-steps.lock.yml \
@@ -146,13 +177,15 @@ jobs:
                 -f ci_conclusion="$conclusion" \
                 -f ci_head_sha="$head_sha"
               echo "Dispatched pipeline next-steps analysis for PR #$pr_number."
-              wait_for_workflow_run pipeline-analysis-next-steps.lock.yml "$analysis_run_title"
+              analysis_run_id="$(wait_for_workflow_run_id \
+                pipeline-analysis-next-steps.lock.yml "$analysis_run_title")"
             fi
 
-            dispatch_auto_fix "$pr_number" "$head_sha" "$is_fork" "$head_ref" "$base_ref"
+            dispatch_auto_fix "$pr_number" "$head_sha" "$is_fork" "$head_ref" "$base_ref" \
+              "$analysis_run_id" "$labels_json"
           }
 
-          # Attempt an automated fix. Its draft PR initially targets the original PR's base for CI,
+          # Attempt an automated fix. Its draft PR initially targets the default branch for CI,
           # then the validation workflow retargets it to the contributor branch after a clean run.
           # Fork PRs are skipped because this repo cannot publish a branch into the contributor's
           # fork or open the final PR against a branch there.
@@ -162,7 +195,27 @@ jobs:
             local is_fork="$3"
             local head_ref="$4"
             local validation_base_ref="$5"
+            local analysis_run_id="$6"
+            local labels_json="$7"
             local auto_fix_run_title existing_run_titles
+
+            case "${AUTO_FIX_MODE:-disabled}" in
+              enabled) ;;
+              pilot)
+                if ! jq -e 'index("pipeline-auto-fix") != null' <<<"$labels_json" >/dev/null; then
+                  echo "Skipping auto-fix for PR #$pr_number; pilot mode requires the pipeline-auto-fix label."
+                  return 0
+                fi
+                ;;
+              disabled|"")
+                echo "Skipping auto-fix for PR #$pr_number; PIPELINE_ANALYSIS_AUTO_FIX_MODE is disabled."
+                return 0
+                ;;
+              *)
+                echo "::warning::Unknown PIPELINE_ANALYSIS_AUTO_FIX_MODE '$AUTO_FIX_MODE'; skipping auto-fix."
+                return 0
+                ;;
+            esac
 
             if [ "$is_fork" = "true" ]; then
               echo "Skipping auto-fix for PR #$pr_number; fork PRs cannot receive a fix branch."
@@ -175,11 +228,15 @@ jobs:
             fi
 
             auto_fix_run_title="Pipeline Analysis - Auto Fix / PR #$pr_number / $head_sha"
-            existing_run_titles="$(workflow_run_titles pipeline-analysis-auto-fix.lock.yml)"
+            existing_run_titles="$(workflow_runs pipeline-analysis-auto-fix.lock.yml |
+              jq -r '.[].displayTitle')"
             if grep -qxF "$auto_fix_run_title" <<<"$existing_run_titles"; then
               echo "Pipeline auto-fix already dispatched for PR #$pr_number at $head_sha."
               return 0
             fi
+
+            echo "Waiting for analysis run $analysis_run_id before dispatching auto-fix."
+            wait_for_successful_workflow_run "$analysis_run_id"
 
             gh workflow run pipeline-analysis-auto-fix.lock.yml \
               --repo "$REPOSITORY" \
@@ -187,9 +244,10 @@ jobs:
               -f pr_number="$pr_number" \
               -f pr_head_ref="$head_ref" \
               -f ci_head_sha="$head_sha" \
+              -f analysis_run_id="$analysis_run_id" \
               -f validation_base_ref="$validation_base_ref"
             echo "Dispatched pipeline auto-fix for PR #$pr_number (validation base $validation_base_ref)."
-            wait_for_workflow_run pipeline-analysis-auto-fix.lock.yml "$auto_fix_run_title"
+            wait_for_workflow_run_id pipeline-analysis-auto-fix.lock.yml "$auto_fix_run_title" >/dev/null
           }
 
           if [ -z "$PR_NUMBER" ]; then
