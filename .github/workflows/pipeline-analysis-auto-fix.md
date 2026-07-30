@@ -64,6 +64,8 @@ network:
 # verifies that this commit is still the PR head before the agent publishes anything.
 checkout:
   ref: ${{ github.event.inputs.ci_head_sha }}
+  # The create-pull-request tool must compare the fix with the validation base.
+  fetch-depth: 0
 
 steps:
   - name: Install azsdk CLI
