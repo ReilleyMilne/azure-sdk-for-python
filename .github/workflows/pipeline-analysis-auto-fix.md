@@ -144,6 +144,9 @@ safe-outputs:
     labels: [automated]
     draft: true
     max: 1
+    # Signed replay cannot preserve the original PR commits when the temporary validation base
+    # differs from the checked-out head. Push the complete branch directly instead.
+    signed-commits: false
     # Carry routing metadata in a compiler-controlled prefix instead of relying on the agent.
     branch-prefix: "copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/"
     # Validate against the original PR's base first. Validation retargets to the contributor branch.
