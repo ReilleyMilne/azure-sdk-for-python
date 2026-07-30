@@ -64,6 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           CI_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           PIPELINE: ${{ github.event.check_run.name }}
           FIX_PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
@@ -181,7 +182,12 @@ jobs:
             exit 0
           fi
 
-          echo "Validating fix PR #$FIX_PR_NUMBER (branch $fix_head_ref) against original PR #$original_pr."
+          # Report the exact commits being compared rather than the branch names. Branches are
+          # mutable - both sides can be force-pushed between the build and this run - so the SHAs
+          # are the only unambiguous record of what was actually measured.
+          echo "Validating fix PR #$FIX_PR_NUMBER against original PR #$original_pr:"
+          echo "  base    (PR #$original_pr)    $original_sha"
+          echo "  created (PR #$FIX_PR_NUMBER) $CI_HEAD_SHA"
 
           # --- Compare results ---------------------------------------------------------------
           fetch_legs "$original_sha" > baseline.tsv
@@ -270,8 +276,14 @@ jobs:
             printf '%s proposes a fix for the failure analyzed above, and its pipeline run has\n' "$fix_pr_url"
             printf 'confirmed it:\n\n'
             printf '%s\n\n' "$fixed_leg_list"
-            printf 'These failed on this PR and now pass on the fix branch, with nothing else\n'
-            printf 'regressing (compared by %s).\n\n' "$COMPARISON"
+            printf 'These failed at the base commit and now pass at the fix commit, with nothing\n'
+            printf 'else regressing (compared by %s).\n\n' "$COMPARISON"
+            printf '| | Commit |\n'
+            printf '| --- | --- |\n'
+            printf '| Base (this PR) | [`%s`](%s/commit/%s) |\n' \
+              "${original_sha:0:8}" "$REPO_URL" "$original_sha"
+            printf '| Created (fix) | [`%s`](%s/commit/%s) |\n\n' \
+              "${CI_HEAD_SHA:0:8}" "$REPO_URL" "$CI_HEAD_SHA"
             printf 'Merging that pull request applies the fix to this one. Review it as you would any\n'
             printf 'other change - it is a suggestion, not an approval.\n'
           } > suggestion.md

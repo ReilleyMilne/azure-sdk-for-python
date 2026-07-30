@@ -54,9 +54,12 @@ network:
 
 # Only the base-branch `eng/` tree is needed to install the azsdk CLI. No PR code is checked
 # out or executed; the analysis works entirely off the PR/build data fetched by the tool.
+# `documentation/` is included so that in `Azure/azure-rest-api-specs` the agent can read that
+# repository's `ci-fix.md` troubleshooting guide; the pattern matches nothing elsewhere.
 checkout:
   sparse-checkout: |
     eng
+    documentation
 
 # Deterministic pre-agent steps: install the azsdk CLI (the analyze tool is a plain stdio MCP
 # server that gh-aw's MCP Gateway cannot host, so we drive its CLI surface) and run the
@@ -93,7 +96,10 @@ steps:
       # step so the run surfaces the problem instead of the agent silently treating an error as
       # "nothing to report" and finishing green.
       exit_code=0
-      azsdk ci analyze "$analysis_url" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
+      # Record the URL the analysis was actually sourced from. The agent needs it verbatim to
+      # fetch artifact contents later, and in harness mode it is not this repository's PR URL.
+      echo "===== Analysis source: $analysis_url =====" > "$GITHUB_WORKSPACE/pipeline-analysis.txt"
+      azsdk ci analyze "$analysis_url" >> "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
       echo "azsdk ci analyze exit code: $exit_code"
       echo "----- pipeline-analysis.txt -----"
       # The file holds PR-controlled build output. Prefix any line that looks like a GitHub
@@ -125,8 +131,8 @@ steps:
 tools:
   github:
     toolsets: [context, repos, pull_requests, actions]
-  # Read-only: the agent only needs to read the analysis file produced above.
-  bash: ["cat", "ls", "head", "tail", "wc"]
+  # Read-only apart from `azsdk ci test-results`, which fetches pipeline artifact contents.
+  bash: ["cat", "ls", "head", "tail", "wc", "azsdk ci test-results:*"]
 
 safe-outputs:
   # A single, self-updating "Pipeline Analysis Next Steps" comment on the PR. hide-older-comments
@@ -165,7 +171,8 @@ workspace root. Your job is to turn that raw tool output into one concise, actio
 
 ## Step 0 - Read the analysis and validate
 
-1. Read `pipeline-analysis.txt` (it is in the current working directory). It has up to two parts:
+1. Read `pipeline-analysis.txt` (it is in the current working directory). It opens with an
+   `===== Analysis source: <url> =====` line, then has up to two parts:
    the `azsdk ci analyze` output, and a trailing
    `===== Failing checks on <repo> PR #<n> =====` section listing this PR's own failing checks
    read from the GitHub Checks API.
@@ -197,6 +204,25 @@ From the tool output, determine what failed and the most likely cause(s):
 - For **infrastructure** failures, recommend re-running the pipeline rather than changing code;
   only recommend code changes for test/build/validation failures.
 - Preserve any Azure DevOps build URLs from the output so reviewers can jump to the logs.
+
+### Getting more detail when the analysis is thin
+
+`azsdk ci analyze` reports the *names* of the artifacts a failing build published, not their
+contents. When the named artifacts are what you need to explain the failure, fetch them:
+
+```
+azsdk ci test-results "<the URL from the 'Analysis source' line>"
+```
+
+Use the URL from the `===== Analysis source: =====` line verbatim - in harness mode the analyzed
+build belongs to a different repository, so this PR's URL will not resolve. Ground the comment in
+what the artifacts actually say; if the command fails or returns nothing usable, carry on with
+the analysis you already have and do not speculate about the contents.
+
+If `${{ github.repository }}` is `Azure/azure-rest-api-specs`, also read `documentation/ci-fix.md`
+from the workspace. It maps that repository's CI failures to their documented local fix commands,
+so prefer the commands it names when recommending next steps. The file does not exist in other
+repositories - skip it there.
 
 ## Step 2 - Compose the "Pipeline Analysis Next Steps" comment
 

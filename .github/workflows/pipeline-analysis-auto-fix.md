@@ -88,7 +88,10 @@ steps:
         echo "::notice::Harness mode - sourcing pipeline analysis from $analysis_url instead of $PR_URL."
       fi
       exit_code=0
-      azsdk ci analyze "$analysis_url" > "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
+      # Record the URL the analysis was actually sourced from. The agent needs it verbatim to
+      # fetch artifact contents later, and in harness mode it is not this repository's PR URL.
+      echo "===== Analysis source: $analysis_url =====" > "$GITHUB_WORKSPACE/pipeline-analysis.txt"
+      azsdk ci analyze "$analysis_url" >> "$GITHUB_WORKSPACE/pipeline-analysis.txt" 2>&1 || exit_code=$?
       echo "azsdk ci analyze exit code: $exit_code"
       sed 's/^::/ ::/' "$GITHUB_WORKSPACE/pipeline-analysis.txt"
       if [ "$exit_code" -ne 0 ] && ! grep -qF "No failed Azure Pipeline builds found" "$GITHUB_WORKSPACE/pipeline-analysis.txt"; then
@@ -170,7 +173,8 @@ targeting that branch. You are not merging anything - the PR author decides.
 
 ## Step 0 - Read the analysis and decide whether to act
 
-1. Read `pipeline-analysis.txt`. It has up to two parts: the `azsdk ci analyze` output, and a
+1. Read `pipeline-analysis.txt`. It opens with an `===== Analysis source: <url> =====` line, then
+   has up to two parts: the `azsdk ci analyze` output, and a
    trailing `===== Failing checks on <repo> PR #<n> =====` section listing this PR's own failing
    checks from the GitHub Checks API.
    - **Harness mode.** If the run log said `Harness mode - sourcing pipeline analysis from ...`,
@@ -206,8 +210,10 @@ from the `view`/`read_file` tools, so a shell read is not counted.
   `references/failure-patterns.md` for the failure categories and pattern-to-fix mappings.
 - If a skill under `.github/skills/` describes how to fix this specific failure, read its
   `SKILL.md` with `view` and follow it.
-- If `pipeline-analysis.txt` only names artifacts and you need their contents, run:
-  `azsdk ci test-results "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"`
+- If `pipeline-analysis.txt` only names artifacts and you need their contents, run
+  `azsdk ci test-results "<the URL from the 'Analysis source' line>"`. Use that URL verbatim - in
+  harness mode the analyzed build belongs to a different repository, so this PR's URL will not
+  resolve.
 - If `${{ github.repository }}` is `Azure/azure-rest-api-specs`, also read
   `documentation/ci-fix.md` and prefer its documented local commands. It does not exist in other
   repositories - skip it there.
