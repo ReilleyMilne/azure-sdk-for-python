@@ -1,1 +1,0 @@
-Intervention-free fork artifact handoff validation.
