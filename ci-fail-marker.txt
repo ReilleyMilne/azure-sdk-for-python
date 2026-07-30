@@ -1,0 +1,1 @@
+Mock pipeline failure for the pipeline-analysis auto-fix demo.
