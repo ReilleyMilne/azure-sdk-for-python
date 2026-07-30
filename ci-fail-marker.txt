@@ -1,0 +1,1 @@
+Fork-only artifact handoff validation.
