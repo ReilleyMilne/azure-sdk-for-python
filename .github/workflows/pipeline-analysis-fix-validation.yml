@@ -18,7 +18,7 @@
 #
 #       every leg that FAILED on the original PR now PASSES on the fix PR,
 #       no leg that PASSED on the original PR now FAILS,
-#       no newly introduced leg FAILS, and every candidate rollup is green.
+#       no newly introduced leg FAILS, and the candidate rollup is green.
 #
 # Why the "leg missing" guard:
 #   The matrix is generated per-PR (`generate_job_matrix`) from the changed file set, so the fix PR
@@ -64,7 +64,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
-          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
           CI_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           PIPELINE: ${{ github.event.check_run.name }}
           FIX_PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
@@ -127,6 +126,10 @@ jobs:
             awk -F'\t' -v n="$2" '$1 == n { print $2; exit }' "$1"
           }
 
+          rollup_field() { # rollup_field <rollups-file> <pipeline-name> <field-number>
+            awk -F'\t' -v n="$2" -v field="$3" '$1 == n { print $field; exit }' "$1"
+          }
+
           # --- Resolve the fix PR ------------------------------------------------------------
           if [ -z "${FIX_PR_NUMBER:-}" ]; then
             FIX_PR_NUMBER="$(gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" \
@@ -169,7 +172,8 @@ jobs:
             exit 0
           fi
 
-          # The compiler-controlled branch prefix carries the original PR and immutable baseline.
+          # The requested branch prefix carries both the original PR and immutable baseline SHA.
+          # gh-aw appends a uniqueness suffix, so parse the prefix instead of the entire branch.
           if ! [[ "$fix_head_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]]; then
             echo "Could not parse an original PR and baseline SHA from branch '$fix_head_ref'; nothing to do."
             exit 0
@@ -196,9 +200,7 @@ jobs:
             exit 0
           fi
 
-          echo "Validating fix PR #$FIX_PR_NUMBER against original PR #$original_pr:"
-          echo "  base    (PR #$original_pr)    $original_sha"
-          echo "  created (PR #$FIX_PR_NUMBER) $CI_HEAD_SHA"
+          echo "Validating fix PR #$FIX_PR_NUMBER (branch $fix_head_ref) against original PR #$original_pr."
 
           # --- Compare results ---------------------------------------------------------------
           # Do not let one successful pipeline approve while another is pending or failing.
@@ -218,8 +220,23 @@ jobs:
             fi
           done < candidate-rollups.tsv
 
-          baseline_failed_pipelines="$(fetch_all_rollups "$original_sha" |
-            awk -F'\t' '$2 == "completed" && $3 == "failure" { print $1 }')"
+          fetch_all_rollups "$original_sha" > baseline-rollups.tsv
+          if [ ! -s baseline-rollups.tsv ]; then
+            echo "Original PR #$original_pr has no Azure Pipelines rollups at $original_sha; nothing to prove."
+            exit 0
+          fi
+          while IFS=$'\t' read -r pipeline status conclusion; do
+            case "$conclusion" in success|failure) ;; *) continue ;; esac
+            candidate_status="$(rollup_field candidate-rollups.tsv "$pipeline" 2)"
+            candidate_conclusion="$(rollup_field candidate-rollups.tsv "$pipeline" 3)"
+            if [ "$candidate_status" != "completed" ] || [ "$candidate_conclusion" != "success" ]; then
+              echo "Baseline pipeline '$pipeline' is '${candidate_conclusion:-missing}' on the fix run; staying silent."
+              exit 0
+            fi
+          done < baseline-rollups.tsv
+
+          baseline_failed_pipelines="$(awk -F'\t' \
+            '$2 == "completed" && $3 == "failure" { print $1 }' baseline-rollups.tsv)"
           if [ -z "$baseline_failed_pipelines" ]; then
             echo "Original PR #$original_pr has no failed pipeline rollups at $original_sha; nothing to prove."
             exit 0
@@ -267,8 +284,8 @@ jobs:
             while IFS=$'\t' read -r leg conclusion; do
               [ "$conclusion" = "success" ] || continue
               candidate_conclusion="$(conclusion_of candidate.tsv "$leg")"
-              if [ -n "$candidate_conclusion" ] && [ "$candidate_conclusion" != "success" ]; then
-                echo "Leg '$leg' regressed from success to '$candidate_conclusion'; staying silent."
+              if [ "$candidate_conclusion" != "success" ]; then
+                echo "Baseline-successful leg '$leg' is '${candidate_conclusion:-missing}' on the fix run; staying silent."
                 exit 0
               fi
             done < baseline.tsv
@@ -304,13 +321,50 @@ jobs:
             exit 0
           fi
 
+          # Close the race between the initial stale checks and publishing the suggestion.
+          latest_original_json="$(gh pr view "$original_pr" --repo "$REPOSITORY" \
+            --json headRefName,headRefOid,state 2>/dev/null || true)"
+          latest_fix_json="$(gh pr view "$FIX_PR_NUMBER" --repo "$REPOSITORY" \
+            --json headRefOid,state 2>/dev/null || true)"
+          if [ -z "$latest_original_json" ] || [ -z "$latest_fix_json" ] ||
+             [ "$(jq -r '.state' <<<"$latest_original_json")" != "OPEN" ] ||
+             [ "$(jq -r '.headRefName' <<<"$latest_original_json")" != "$original_head_ref" ] ||
+             [ "$(jq -r '.headRefOid' <<<"$latest_original_json")" != "$original_sha" ] ||
+             [ "$(jq -r '.state' <<<"$latest_fix_json")" != "OPEN" ] ||
+             [ "$(jq -r '.headRefOid' <<<"$latest_fix_json")" != "$CI_HEAD_SHA" ]; then
+            echo "Original or fix PR advanced during validation; staying silent."
+            exit 0
+          fi
+
           # The fix PR initially targets the original PR's base so Azure DevOps PR CI runs.
           # Once proven, retarget it to the contributor branch so merging applies only to the
           # original PR and can never land directly on its base branch.
+          retargeted=false
           if [ "$fix_base_ref" != "$original_head_ref" ]; then
             gh api -X PATCH "repos/$REPOSITORY/pulls/$FIX_PR_NUMBER" \
               -f base="$original_head_ref" >/dev/null
+            retargeted=true
             echo "Retargeted fix PR #$FIX_PR_NUMBER from $fix_base_ref to $original_head_ref."
+          fi
+
+          post_retarget_original_json="$(gh pr view "$original_pr" --repo "$REPOSITORY" \
+            --json headRefName,headRefOid,state 2>/dev/null || true)"
+          post_retarget_fix_json="$(gh pr view "$FIX_PR_NUMBER" --repo "$REPOSITORY" \
+            --json baseRefName,headRefOid,state 2>/dev/null || true)"
+          if [ -z "$post_retarget_original_json" ] || [ -z "$post_retarget_fix_json" ] ||
+             [ "$(jq -r '.state' <<<"$post_retarget_original_json")" != "OPEN" ] ||
+             [ "$(jq -r '.headRefName' <<<"$post_retarget_original_json")" != "$original_head_ref" ] ||
+             [ "$(jq -r '.headRefOid' <<<"$post_retarget_original_json")" != "$original_sha" ] ||
+             [ "$(jq -r '.state' <<<"$post_retarget_fix_json")" != "OPEN" ] ||
+             [ "$(jq -r '.headRefOid' <<<"$post_retarget_fix_json")" != "$CI_HEAD_SHA" ] ||
+             [ "$(jq -r '.baseRefName' <<<"$post_retarget_fix_json")" != "$original_head_ref" ]; then
+            if [ "$retargeted" = "true" ]; then
+              gh api -X PATCH "repos/$REPOSITORY/pulls/$FIX_PR_NUMBER" \
+                -f base="$fix_base_ref" >/dev/null
+              echo "Rolled fix PR #$FIX_PR_NUMBER back to $fix_base_ref after a concurrent update."
+            fi
+            echo "Original or fix PR advanced while retargeting; staying silent."
+            exit 0
           fi
 
           # Render as a markdown list without a sed end-of-line anchor, which shellcheck
@@ -327,14 +381,8 @@ jobs:
             printf '%s proposes a fix for the failure analyzed above, and its pipeline run has\n' "$fix_pr_url"
             printf 'confirmed it:\n\n'
             printf '%s\n\n' "$fixed_leg_list"
-            printf 'These failed at the base commit and now pass at the fix commit, with nothing\n'
-            printf 'else regressing (compared by %s).\n\n' "$COMPARISON"
-            printf '| | Commit |\n'
-            printf '| --- | --- |\n'
-            printf "| Base (this PR) | [\`%s\`](%s/commit/%s) |\n" \
-              "${original_sha:0:8}" "$REPO_URL" "$original_sha"
-            printf "| Created (fix) | [\`%s\`](%s/commit/%s) |\n\n" \
-              "${CI_HEAD_SHA:0:8}" "$REPO_URL" "$CI_HEAD_SHA"
+            printf 'These failed on this PR and now pass on the fix branch, with nothing else\n'
+            printf 'regressing (compared by %s).\n\n' "$COMPARISON"
             printf 'Merging that pull request applies the fix to this one. Review it as you would any\n'
             printf 'other change - it is a suggestion, not an approval.\n'
           } > suggestion.md

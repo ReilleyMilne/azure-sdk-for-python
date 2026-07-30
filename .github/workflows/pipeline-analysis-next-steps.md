@@ -129,6 +129,15 @@ steps:
           2>/dev/null || echo "(could not read check runs)"
       } >> "$GITHUB_WORKSPACE/pipeline-analysis.txt"
 
+post-steps:
+  - name: Upload pipeline analysis
+    uses: actions/upload-artifact@v7
+    with:
+      name: pipeline-analysis
+      path: pipeline-analysis.txt
+      if-no-files-found: error
+      retention-days: 7
+
 tools:
   github:
     toolsets: [context, repos, pull_requests, actions]
