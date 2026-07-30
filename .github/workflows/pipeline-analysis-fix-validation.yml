@@ -280,9 +280,9 @@ jobs:
             printf 'else regressing (compared by %s).\n\n' "$COMPARISON"
             printf '| | Commit |\n'
             printf '| --- | --- |\n'
-            printf '| Base (this PR) | [`%s`](%s/commit/%s) |\n' \
+            printf "| Base (this PR) | [\`%s\`](%s/commit/%s) |\n" \
               "${original_sha:0:8}" "$REPO_URL" "$original_sha"
-            printf '| Created (fix) | [`%s`](%s/commit/%s) |\n\n' \
+            printf "| Created (fix) | [\`%s\`](%s/commit/%s) |\n\n" \
               "${CI_HEAD_SHA:0:8}" "$REPO_URL" "$CI_HEAD_SHA"
             printf 'Merging that pull request applies the fix to this one. Review it as you would any\n'
             printf 'other change - it is a suggestion, not an approval.\n'
