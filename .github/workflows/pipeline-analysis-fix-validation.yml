@@ -499,8 +499,8 @@ jobs:
               -f head_sha="$CI_HEAD_SHA" \
               -f status="completed" \
               -f conclusion="success" \
-              -f output[title]="Automated fix validated" \
-              -f output[summary]="Strict baseline and candidate comparison passed before retargeting." \
+              -f 'output[title]=Automated fix validated' \
+              -f 'output[summary]=Strict baseline and candidate comparison passed before retargeting.' \
               >/dev/null
             echo "Attested validated fix commit $CI_HEAD_SHA."
           fi
