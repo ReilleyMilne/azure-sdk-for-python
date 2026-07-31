@@ -105,7 +105,8 @@ jobs:
 
           wait_for_successful_workflow_run() {
             local run_id="$1"
-            local run_json status conclusion
+            local allow_retry="${2:-false}"
+            local retried=false run_json status conclusion
             # Auto-fix permits a 45-minute agent job plus activation, detection, and safe-output
             # jobs. Keep enough buffer for the full downstream workflow, not just its agent.
             for _ in {1..720}; do
@@ -115,6 +116,13 @@ jobs:
               if [ "$status" = "completed" ]; then
                 if [ "$conclusion" = "success" ]; then
                   return 0
+                fi
+                if [ "$allow_retry" = "true" ] && [ "$retried" = "false" ]; then
+                  echo "::warning::Required workflow run $run_id concluded '$conclusion'; retrying failed jobs once."
+                  gh run rerun "$run_id" --repo "$REPOSITORY" --failed
+                  retried=true
+                  sleep 10
+                  continue
                 fi
                 echo "::error::Required workflow run $run_id concluded '$conclusion'."
                 return 1
@@ -236,7 +244,7 @@ jobs:
               echo "Pipeline auto-fix already dispatched for PR #$pr_number at $head_sha."
             else
               echo "Waiting for analysis run $analysis_run_id before dispatching auto-fix."
-              wait_for_successful_workflow_run "$analysis_run_id"
+              wait_for_successful_workflow_run "$analysis_run_id" true
 
               gh workflow run pipeline-analysis-auto-fix.lock.yml \
                 --repo "$REPOSITORY" \

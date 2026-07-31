@@ -70,7 +70,7 @@ steps:
     shell: pwsh
     run: |
       $dir = Join-Path $env:RUNNER_TEMP 'azsdk-cli'
-      ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $dir
+      ./eng/common/mcp/azure-sdk-mcp.ps1 -Version 0.6.33 -InstallDirectory $dir
       Add-Content -Path $env:GITHUB_PATH -Value $dir
   - name: Analyze failing pipeline
     shell: bash
