@@ -84,32 +84,137 @@ parameters:
   - name: EnvVars
     type: object
     default: {}
+  - name: DefaultBranch
+    type: string
+    default: main
 
 extends:
   template: /eng/pipelines/templates/stages/1es-redirect.yml
   parameters:
     oneESTemplateTag: ${{ parameters.oneESTemplateTag }}
     stages:
-      - ${{ if and(eq(parameters.SkipPrValidation, true), eq(variables['Build.Reason'], 'Manual')) }}:
-        - stage: NoOp
-          displayName: No-op
-          variables:
-            - template: /eng/pipelines/templates/variables/globals.yml
-            - template: /eng/pipelines/templates/variables/image.yml
-          jobs:
-            - job: NoOp
-              displayName: No-op
-              pool:
-                name: $(LINUXPOOL)
-                image: $(LINUXVMIMAGE)
-                os: linux
-              steps:
-                - checkout: none
-                - pwsh: Write-Host "PR validation skipped because SkipPrValidation was set to true for a manual run."
-                  displayName: Skip PR validation
+      - stage: RetargetValidationGate
+        displayName: Retarget validation gate
+        condition: |
+          and(
+            eq(variables['Build.Reason'], 'PullRequest'),
+            or(
+              startsWith(variables['System.PullRequest.SourceBranch'], 'copilot-pipeline-fix/'),
+              startsWith(variables['System.PullRequest.SourceBranch'], 'refs/heads/copilot-pipeline-fix/')
+            ),
+            ne(
+              replace(variables['System.PullRequest.TargetBranch'], 'refs/heads/', ''),
+              '${{ parameters.DefaultBranch }}'
+            )
+          )
+        variables:
+          - template: /eng/pipelines/templates/variables/globals.yml
+          - template: /eng/pipelines/templates/variables/image.yml
+        jobs:
+          - job: CheckValidation
+            displayName: Check validation
+            pool:
+              name: $(LINUXPOOL)
+              image: $(LINUXVMIMAGE)
+              os: linux
+            steps:
+              - checkout: none
+              - bash: |
+                  set -euo pipefail
+                  source_ref="$PR_SOURCE_REF"
+                  source_ref="${source_ref#refs/heads/}"
+                  target_ref="$PR_TARGET_REF"
+                  target_ref="${target_ref#refs/heads/}"
+                  source_sha="$PR_SOURCE_SHA"
+
+                  skip=false
+                  if [[ "$source_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]] &&
+                     [ -n "$source_sha" ]; then
+                    original_pr="${BASH_REMATCH[1]}"
+                    original_sha="${BASH_REMATCH[2]}"
+                    repository_uri="$REPOSITORY_URI"
+                    repository="${repository_uri#https://github.com/}"
+                    repository="${repository%.git}"
+                    repository="${repository%/}"
+                    api="https://api.github.com/repos/$repository"
+                    pr_json="$(curl -fsSL \
+                      -H 'Accept: application/vnd.github+json' \
+                      "$api/pulls/$original_pr" 2>/dev/null || true)"
+                    checks_json="$(curl -fsSL \
+                      -H 'Accept: application/vnd.github+json' \
+                      "$api/commits/$source_sha/check-runs?per_page=100" 2>/dev/null || true)"
+
+                    if [ -n "$pr_json" ] && [ -n "$checks_json" ] &&
+                       [ "$(jq -r '.state' <<<"$pr_json")" = "open" ] &&
+                       [ "$(jq -r '.head.sha' <<<"$pr_json")" = "$original_sha" ] &&
+                       [ "$(jq -r '.head.ref' <<<"$pr_json")" = "$target_ref" ] &&
+                       jq -e '
+                         any(.check_runs[];
+                           .app.slug == "github-actions" and
+                           .name == "Pipeline Analysis - Validated Fix" and
+                           .conclusion == "success")
+                       ' <<<"$checks_json" >/dev/null; then
+                      skip=true
+                    fi
+                  fi
+
+                  echo "skipDuplicateValidation=$skip"
+                  echo "##vso[task.setvariable variable=skipDuplicateValidation;isOutput=true]$skip"
+                name: checkValidation
+                displayName: Verify validated-fix attestation
+                env:
+                  PR_SOURCE_REF: $(System.PullRequest.SourceBranch)
+                  PR_TARGET_REF: $(System.PullRequest.TargetBranch)
+                  PR_SOURCE_SHA: $(System.PullRequest.SourceCommitId)
+                  REPOSITORY_URI: $(Build.Repository.Uri)
+
+      - stage: NoOp
+        displayName: No-op
+        dependsOn: RetargetValidationGate
+        condition: |
+          or(
+            and(eq(${{ parameters.SkipPrValidation }}, true), eq(variables['Build.Reason'], 'Manual')),
+            eq(
+              dependencies.RetargetValidationGate.outputs['CheckValidation.checkValidation.skipDuplicateValidation'],
+              'true'
+            )
+          )
+        variables:
+          - template: /eng/pipelines/templates/variables/globals.yml
+          - template: /eng/pipelines/templates/variables/image.yml
+        jobs:
+          - job: NoOp
+            displayName: No-op
+            pool:
+              name: $(LINUXPOOL)
+              image: $(LINUXVMIMAGE)
+              os: linux
+            steps:
+              - checkout: none
+              - pwsh: |
+                  if ('$(Build.Reason)' -eq 'Manual') {
+                    Write-Host "PR validation skipped because SkipPrValidation was set for a manual run."
+                  }
+                  else {
+                    Write-Host "The generated fix was already validated against ${{ parameters.DefaultBranch }}."
+                    Write-Host "Skipping duplicate validation after retargeting to $env:PR_TARGET_REF."
+                  }
+                displayName: Skip duplicate PR validation
+                env:
+                  PR_TARGET_REF: $(System.PullRequest.TargetBranch)
 
       - stage: Build
-        condition: not(and(eq(${{ parameters.SkipPrValidation }}, true), eq(variables['Build.Reason'], 'Manual')))
+        dependsOn:
+          - RetargetValidationGate
+          - NoOp
+        condition: |
+          and(
+            not(and(eq(${{ parameters.SkipPrValidation }}, true), eq(variables['Build.Reason'], 'Manual'))),
+            ne(
+              dependencies.RetargetValidationGate.outputs['CheckValidation.checkValidation.skipDuplicateValidation'],
+              'true'
+            )
+          )
         jobs:
           - template: /eng/pipelines/templates/jobs/ci.yml
             parameters:
