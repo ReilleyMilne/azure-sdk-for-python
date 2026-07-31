@@ -106,7 +106,9 @@ jobs:
           wait_for_successful_workflow_run() {
             local run_id="$1"
             local run_json status conclusion
-            for _ in {1..180}; do
+            # Auto-fix permits a 45-minute agent job plus activation, detection, and safe-output
+            # jobs. Keep enough buffer for the full downstream workflow, not just its agent.
+            for _ in {1..720}; do
               run_json="$(gh run view "$run_id" --repo "$REPOSITORY" --json status,conclusion)"
               status="$(jq -r '.status' <<<"$run_json")"
               conclusion="$(jq -r '.conclusion // ""' <<<"$run_json")"
@@ -114,12 +116,12 @@ jobs:
                 if [ "$conclusion" = "success" ]; then
                   return 0
                 fi
-                echo "::error::Analysis run $run_id concluded '$conclusion'; auto-fix will not run."
+                echo "::error::Required workflow run $run_id concluded '$conclusion'."
                 return 1
               fi
               sleep 10
             done
-            echo "::error::Analysis run $run_id did not complete within the dispatcher timeout."
+            echo "::error::Required workflow run $run_id did not complete within the dispatcher timeout."
             return 1
           }
 
@@ -197,7 +199,7 @@ jobs:
             local validation_base_ref="$5"
             local analysis_run_id="$6"
             local labels_json="$7"
-            local auto_fix_run_title existing_run_titles
+            local auto_fix_run_title auto_fix_run_id validation_run_title validation_run_id
 
             case "${AUTO_FIX_MODE:-disabled}" in
               enabled) ;;
@@ -228,26 +230,42 @@ jobs:
             fi
 
             auto_fix_run_title="Pipeline Analysis - Auto Fix / PR #$pr_number / $head_sha"
-            existing_run_titles="$(workflow_runs pipeline-analysis-auto-fix.lock.yml |
-              jq -r '.[].displayTitle')"
-            if grep -qxF "$auto_fix_run_title" <<<"$existing_run_titles"; then
+            auto_fix_run_id="$(find_workflow_run_id \
+              pipeline-analysis-auto-fix.lock.yml "$auto_fix_run_title")"
+            if [ -n "$auto_fix_run_id" ]; then
               echo "Pipeline auto-fix already dispatched for PR #$pr_number at $head_sha."
-              return 0
+            else
+              echo "Waiting for analysis run $analysis_run_id before dispatching auto-fix."
+              wait_for_successful_workflow_run "$analysis_run_id"
+
+              gh workflow run pipeline-analysis-auto-fix.lock.yml \
+                --repo "$REPOSITORY" \
+                --ref "$DEFAULT_BRANCH" \
+                -f pr_number="$pr_number" \
+                -f pr_head_ref="$head_ref" \
+                -f ci_head_sha="$head_sha" \
+                -f analysis_run_id="$analysis_run_id" \
+                -f validation_base_ref="$validation_base_ref"
+              echo "Dispatched pipeline auto-fix for PR #$pr_number (validation base $validation_base_ref)."
+              auto_fix_run_id="$(wait_for_workflow_run_id \
+                pipeline-analysis-auto-fix.lock.yml "$auto_fix_run_title")"
             fi
 
-            echo "Waiting for analysis run $analysis_run_id before dispatching auto-fix."
-            wait_for_successful_workflow_run "$analysis_run_id"
+            echo "Waiting for auto-fix run $auto_fix_run_id before dispatching validation."
+            wait_for_successful_workflow_run "$auto_fix_run_id"
 
-            gh workflow run pipeline-analysis-auto-fix.lock.yml \
+            validation_run_title="Pipeline Analysis - Fix Validation / Auto Fix #$auto_fix_run_id"
+            validation_run_id="$(find_workflow_run_id \
+              pipeline-analysis-fix-validation.yml "$validation_run_title")"
+            if [ -n "$validation_run_id" ]; then
+              echo "Fix validation already dispatched for auto-fix run $auto_fix_run_id."
+              return 0
+            fi
+            gh workflow run pipeline-analysis-fix-validation.yml \
               --repo "$REPOSITORY" \
               --ref "$DEFAULT_BRANCH" \
-              -f pr_number="$pr_number" \
-              -f pr_head_ref="$head_ref" \
-              -f ci_head_sha="$head_sha" \
-              -f analysis_run_id="$analysis_run_id" \
-              -f validation_base_ref="$validation_base_ref"
-            echo "Dispatched pipeline auto-fix for PR #$pr_number (validation base $validation_base_ref)."
-            wait_for_workflow_run_id pipeline-analysis-auto-fix.lock.yml "$auto_fix_run_title" >/dev/null
+              -f auto_fix_run_id="$auto_fix_run_id"
+            echo "Dispatched fix validation for auto-fix run $auto_fix_run_id."
           }
 
           if [ -z "$PR_NUMBER" ]; then
