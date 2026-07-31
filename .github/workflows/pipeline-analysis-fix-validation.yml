@@ -55,7 +55,7 @@ on:
 permissions:
   actions: read
   contents: read
-  checks: read
+  checks: write # attest the exact validated fix commit before retargeting
   pull-requests: write # append the validated-fix suggestion to the analysis comment
 
 concurrency:
@@ -479,6 +479,30 @@ jobs:
              [ "$(jq -r '.headRefOid' <<<"$latest_fix_json")" != "$CI_HEAD_SHA" ]; then
             echo "Original or fix PR advanced during validation; staying silent."
             exit 0
+          fi
+
+          # Attest the exact fix commit before retargeting. Azure Pipelines uses this app-owned
+          # check to turn the otherwise duplicate post-retarget run into a fast no-op. A branch
+          # name alone is not trusted: contributors cannot forge a check owned by github-actions.
+          validation_check_name="Pipeline Analysis - Validated Fix"
+          existing_validation_check="$(gh api \
+            "repos/$REPOSITORY/commits/$CI_HEAD_SHA/check-runs?per_page=100" \
+            --jq "[.check_runs[]
+                   | select(.app.slug == \"github-actions\")
+                   | select(.name == \"$validation_check_name\")
+                   | select(.conclusion == \"success\")]
+                  | first
+                  | .id // empty")"
+          if [ -z "$existing_validation_check" ]; then
+            gh api -X POST "repos/$REPOSITORY/check-runs" \
+              -f name="$validation_check_name" \
+              -f head_sha="$CI_HEAD_SHA" \
+              -f status="completed" \
+              -f conclusion="success" \
+              -f 'output[title]=Automated fix validated' \
+              -f 'output[summary]=Strict baseline and candidate comparison passed before retargeting.' \
+              >/dev/null
+            echo "Attested validated fix commit $CI_HEAD_SHA."
           fi
 
           # The fix PR initially targets the original PR's base so Azure DevOps PR CI runs.
