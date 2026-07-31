@@ -106,7 +106,7 @@ jobs:
           wait_for_successful_workflow_run() {
             local run_id="$1"
             local allow_retry="${2:-false}"
-            local retried=false run_json status conclusion
+            local retried=false run_json status conclusion run_attempt
             # Auto-fix permits a 45-minute agent job plus activation, detection, and safe-output
             # jobs. Keep enough buffer for the full downstream workflow, not just its agent.
             for _ in {1..720}; do
@@ -118,11 +118,14 @@ jobs:
                   return 0
                 fi
                 if [ "$allow_retry" = "true" ] && [ "$retried" = "false" ]; then
-                  echo "::warning::Required workflow run $run_id concluded '$conclusion'; retrying failed jobs once."
-                  gh run rerun "$run_id" --repo "$REPOSITORY" --failed
-                  retried=true
-                  sleep 10
-                  continue
+                  run_attempt="$(gh api "repos/$REPOSITORY/actions/runs/$run_id" --jq '.run_attempt')"
+                  if [ "$run_attempt" = "1" ]; then
+                    echo "::warning::Required workflow run $run_id concluded '$conclusion'; retrying failed jobs once."
+                    gh run rerun "$run_id" --repo "$REPOSITORY" --failed
+                    retried=true
+                    sleep 10
+                    continue
+                  fi
                 fi
                 echo "::error::Required workflow run $run_id concluded '$conclusion'."
                 return 1
