@@ -50,18 +50,42 @@ steps:
     shell: bash
     env:
       GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.inputs.pr_number }}
+      PR_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
       PR_URL: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"
     run: |
       set -uo pipefail
       status=0
       azsdk ci analyze "$PR_URL" > pipeline-analysis.txt 2>&1 || status=$?
-      sed 's/^::/ ::/' pipeline-analysis.txt
 
+      # A non-zero exit means either "nothing was failing" or a real auth/network/CLI error.
+      # Only the former is an acceptable no-op; anything else must fail loudly instead of
+      # letting the agent report "nothing to see here".
       if [ "$status" -ne 0 ] &&
          ! grep -qF "No failed Azure Pipeline builds found" pipeline-analysis.txt; then
+        sed 's/^::/ ::/' pipeline-analysis.txt
         echo "::error::azsdk ci analyze failed with exit code $status"
         exit "$status"
       fi
+
+      # azsdk can only read builds from an Azure DevOps organization it is authorised
+      # against, so it reports "No failed Azure Pipeline builds found" for any pipeline it
+      # cannot see. The Checks API always describes the failures actually present on this
+      # pull request, so append it as a second, independent source.
+      {
+        echo
+        echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} ====="
+        gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
+          --jq '.check_runs[]
+                | select(.conclusion == "failure")
+                | "- \(.name): \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
+          2>/dev/null || echo "(could not read check runs)"
+      } >> pipeline-analysis.txt
+
+      # The file holds pull-request-controlled build output, so prefix anything that looks
+      # like a workflow command with a space to log it as plain text.
+      sed 's/^::/ ::/' pipeline-analysis.txt
 
 tools:
   github:
@@ -101,8 +125,12 @@ Analyze the failed Azure Pipelines run for pull request
 
 ## Process
 
-1. Read `pipeline-analysis.txt`.
-2. If it is empty or says `No failed Azure Pipeline builds found`, use `noop`.
+1. Read `pipeline-analysis.txt`. It has two sections: the `azsdk ci analyze` diagnosis, and a
+   `Failing checks on ... PR #...` list read from the GitHub Checks API.
+2. Use `noop` only if the file is empty or *both* sections report nothing. `No failed Azure
+   Pipeline builds found` on its own is not enough: azsdk cannot see pipelines outside the
+   Azure DevOps organization it is authorised against, so analyze the failing checks instead
+   and say that the detailed build log was unavailable.
 3. If `${{ github.event.inputs.ci_head_sha }}` is set, compare it with the PR's current head.
    Use `noop` if the PR has moved.
 4. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and
