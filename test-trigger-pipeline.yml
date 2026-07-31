@@ -56,11 +56,10 @@ stages:
               source_ref="${source_ref#refs/heads/}"
               target_ref="$PR_TARGET_REF"
               target_ref="${target_ref#refs/heads/}"
-              source_sha="$PR_SOURCE_SHA"
 
               skip=false
               if [[ "$source_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]] &&
-                 [ -n "$source_sha" ]; then
+                 [[ "$FIX_PR_NUMBER" =~ ^[0-9]+$ ]]; then
                 original_pr="${BASH_REMATCH[1]}"
                 original_sha="${BASH_REMATCH[2]}"
                 repository_uri="$REPOSITORY_URI"
@@ -70,12 +69,19 @@ stages:
                 api="https://api.github.com/repos/$repository"
                 pr_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
                   "$api/pulls/$original_pr" 2>/dev/null || true)"
+                fix_pr_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+                  "$api/pulls/$FIX_PR_NUMBER" 2>/dev/null || true)"
+                source_sha="$(jq -r '.head.sha // empty' <<<"$fix_pr_json")"
                 checks_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
                   "$api/commits/$source_sha/check-runs?per_page=100" 2>/dev/null || true)"
-                if [ -n "$pr_json" ] && [ -n "$checks_json" ] &&
+                if [ -n "$pr_json" ] && [ -n "$fix_pr_json" ] &&
+                   [ -n "$source_sha" ] && [ -n "$checks_json" ] &&
                    [ "$(jq -r '.state' <<<"$pr_json")" = "open" ] &&
                    [ "$(jq -r '.head.sha' <<<"$pr_json")" = "$original_sha" ] &&
                    [ "$(jq -r '.head.ref' <<<"$pr_json")" = "$target_ref" ] &&
+                   [ "$(jq -r '.state' <<<"$fix_pr_json")" = "open" ] &&
+                   [ "$(jq -r '.head.ref' <<<"$fix_pr_json")" = "$source_ref" ] &&
+                   [ "$(jq -r '.base.ref' <<<"$fix_pr_json")" = "$target_ref" ] &&
                    jq -e '
                      any(.check_runs[];
                        .app.slug == "github-actions" and
@@ -91,7 +97,7 @@ stages:
             env:
               PR_SOURCE_REF: $(System.PullRequest.SourceBranch)
               PR_TARGET_REF: $(System.PullRequest.TargetBranch)
-              PR_SOURCE_SHA: $(System.PullRequest.SourceCommitId)
+              FIX_PR_NUMBER: $(System.PullRequest.PullRequestNumber)
               REPOSITORY_URI: $(Build.Repository.Uri)
 
   - stage: RetargetNoOp
