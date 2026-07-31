@@ -11,7 +11,7 @@
 # The agents (pipeline-analysis-next-steps.md, pipeline-analysis-auto-fix.md) never call GitHub
 # write APIs; every write below runs on the built-in GITHUB_TOKEN with a job-scoped permission
 # set.
-name: Pipeline Analysis
+name: Pipeline Analysis Trigger
 
 on:
   check_run:
