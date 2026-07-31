@@ -1,1 +1,0 @@
-Validate attested fast post-retarget pipeline.
