@@ -128,7 +128,7 @@ extends:
 
                   skip=false
                   if [[ "$source_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]] &&
-                     [[ "$FIX_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+                     [ -n "$FIX_PR_NUMBER" ] && [[ "$FIX_PR_NUMBER" != *[!0-9]* ]]; then
                     original_pr="${BASH_REMATCH[1]}"
                     original_sha="${BASH_REMATCH[2]}"
                     repository_uri="$REPOSITORY_URI"

@@ -125,7 +125,17 @@ steps:
     shell: pwsh
     run: |
       $dir = Join-Path $HOME 'bin'
-      ./eng/common/mcp/azure-sdk-mcp.ps1 -Version 0.6.33 -InstallDirectory $dir
+      $trustedRoot = Join-Path $env:RUNNER_TEMP "trusted-default-branch-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+      git worktree add --detach $trustedRoot "origin/$env:DEFAULT_BRANCH"
+      if ($LASTEXITCODE -ne 0) {
+        throw "Could not create the trusted default-branch worktree."
+      }
+      try {
+        & (Join-Path $trustedRoot 'eng/common/mcp/azure-sdk-mcp.ps1') -InstallDirectory $dir
+      }
+      finally {
+        git worktree remove --force $trustedRoot
+      }
       Add-Content -Path $env:GITHUB_PATH -Value $dir
   - name: Verify analysis run
     shell: bash
