@@ -1,0 +1,1 @@
+Simulated CI failure marker for the pipeline-analysis e2e demo.
