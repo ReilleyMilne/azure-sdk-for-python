@@ -37,6 +37,7 @@
 # head branches matching `copilot-pipeline-fix/pr-<N>-<SHA>`, which are created solely by the
 # auto-fix workflow, so it cannot be triggered by ordinary contributor branches.
 name: Pipeline Analysis - Fix Validation
+run-name: "Pipeline Analysis - Fix Validation / Auto Fix #${{ inputs.auto_fix_run_id || github.event.workflow_run.id || github.event.check_run.head_sha }}"
 
 on:
   check_run:
@@ -44,6 +45,12 @@ on:
   workflow_run:
     workflows: ["Pipeline Analysis - Auto Fix"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      auto_fix_run_id:
+        description: "Exact successful auto-fix run whose emitted pull request should be validated"
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -53,7 +60,7 @@ permissions:
 
 concurrency:
   # Serialize per fix commit (or originating auto-fix run) so two triggers cannot double-post.
-  group: pipeline-analysis-fix-validation-${{ github.event.check_run.head_sha || github.event.workflow_run.id }}
+  group: pipeline-analysis-fix-validation-${{ inputs.auto_fix_run_id || github.event.check_run.head_sha || github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
@@ -62,6 +69,7 @@ jobs:
     # service-specific pipelines such as `python - cosmos - ci`. Parenthesized checks are per-stage
     # legs. Both conclusions are evaluated; the regression checks decide whether the fix is proven.
     if: >
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event_name == 'check_run' &&
        github.event.check_run.check_suite.app.slug == 'azure-pipelines' &&
@@ -78,7 +86,7 @@ jobs:
           CI_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           PIPELINE: ${{ github.event.check_run.name }}
           FIX_PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
-          AUTO_FIX_RUN_ID: ${{ github.event.workflow_run.id }}
+          AUTO_FIX_RUN_ID: ${{ inputs.auto_fix_run_id || github.event.workflow_run.id }}
           AUTO_FIX_RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |
           # shellcheck disable=SC2016
@@ -144,7 +152,16 @@ jobs:
           }
 
           # --- Resolve the fix PR ------------------------------------------------------------
-          if [ "$TRIGGER_KIND" = "workflow_run" ]; then
+          if [ "$TRIGGER_KIND" = "workflow_dispatch" ]; then
+            AUTO_FIX_RUN_TITLE="$(gh run view "$AUTO_FIX_RUN_ID" --repo "$REPOSITORY" \
+              --json displayTitle,status,conclusion \
+              --jq 'select(.status == "completed" and .conclusion == "success") | .displayTitle')"
+            if [ -z "$AUTO_FIX_RUN_TITLE" ]; then
+              echo "Auto-fix run $AUTO_FIX_RUN_ID is not completed successfully."
+              exit 0
+            fi
+          fi
+          if [ "$TRIGGER_KIND" = "workflow_run" ] || [ "$TRIGGER_KIND" = "workflow_dispatch" ]; then
             if ! [[ "$AUTO_FIX_RUN_TITLE" =~ PR[[:space:]]#([0-9]+)[[:space:]]/[[:space:]]([0-9a-f]{40})$ ]]; then
               echo "Could not parse the original PR and SHA from auto-fix run '$AUTO_FIX_RUN_TITLE'."
               exit 0
@@ -200,7 +217,7 @@ jobs:
             copilot-pipeline-fix/pr-*) ;;
             *) echo "PR #$FIX_PR_NUMBER (branch '$fix_head_ref') is not an automated fix branch; nothing to do."; exit 0 ;;
           esac
-          if [ "$TRIGGER_KIND" = "workflow_run" ] &&
+          if { [ "$TRIGGER_KIND" = "workflow_run" ] || [ "$TRIGGER_KIND" = "workflow_dispatch" ]; } &&
              [[ "$fix_head_ref" != "$expected_fix_prefix"* ]]; then
             echo "Fix PR #$FIX_PR_NUMBER does not match auto-fix run '$AUTO_FIX_RUN_TITLE'."
             exit 0
@@ -282,7 +299,7 @@ jobs:
           # candidate rollup. The changed-path and pipeline-definition guards above prevent the
           # candidate from expanding pipeline selection. Require both sets to remain unchanged
           # for two minutes as a final guard against progressively registered baseline rollups.
-          if [ "$TRIGGER_KIND" = "workflow_run" ]; then
+          if [ "$TRIGGER_KIND" = "workflow_run" ] || [ "$TRIGGER_KIND" = "workflow_dispatch" ]; then
             deadline=$(( $(date +%s) + 6900 ))
             while true; do
               fetch_all_rollups "$original_sha" > baseline-wait.tsv
