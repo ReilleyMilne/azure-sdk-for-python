@@ -1,0 +1,281 @@
+# Pipeline Analysis - deterministic glue.
+#
+# One plain workflow drives the whole loop so the agentic parts stay small:
+#
+#   dispatch  Azure Pipelines PR CI fails  -> run the analysis agent, and the auto-fix agent
+#             when the pull request is eligible.
+#   validate  Azure Pipelines CI passes on a generated fix branch -> retarget the draft fix at
+#             the original pull request branch and comment there.
+#   cleanup   Daily -> delete generated fix branches that no longer back an open pull request.
+#
+# The agents (pipeline-analysis-next-steps.md, pipeline-analysis-auto-fix.md) never call GitHub
+# write APIs; every write below runs on the built-in GITHUB_TOKEN with a job-scoped permission
+# set.
+name: Pipeline Analysis
+
+on:
+  check_run:
+    types: [completed]
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  # The non-parenthesized "*- pullrequest" check is the Azure Pipelines rollup; the parenthesized
+  # ones are its individual stages. Note that `check_suite.head_branch` is NOT usable as a filter
+  # here: Azure Pipelines routinely reports it as null, so the branch checks below are done in
+  # the scripts once the pull request has been resolved.
+  dispatch:
+    if: >
+      github.event_name == 'check_run' &&
+      github.event.check_run.check_suite.app.slug == 'azure-pipelines' &&
+      endsWith(github.event.check_run.name, '- pullrequest') &&
+      github.event.check_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Dispatch analysis and optional auto-fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # check_run.pull_requests is empty for pull requests from forks.
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="$(
+              gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" \
+                --jq ".[] | select(.head.sha == \"$HEAD_SHA\") | .number" |
+                head -1
+            )"
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open pull request found for $HEAD_SHA."
+            exit 0
+          fi
+
+          pr="$(
+            gh pr view "$PR_NUMBER" --repo "$REPOSITORY" \
+              --json baseRefName,headRefName,headRefOid,isCrossRepository,isDraft
+          )"
+          if [ "$(jq -r '.headRefOid' <<<"$pr")" != "$HEAD_SHA" ]; then
+            echo "Skipping stale failure for PR #$PR_NUMBER."
+            exit 0
+          fi
+
+          # A failing generated fix is handled by letting it expire, not by analyzing it again.
+          case "$(jq -r '.headRefName' <<<"$pr")" in
+            copilot-pipeline-fix/*)
+              echo "Skipping generated fix PR #$PR_NUMBER."
+              exit 0
+              ;;
+          esac
+
+          context="$(printf '{"item_type":"pull_request","item_number":%s}' "$PR_NUMBER")"
+          gh workflow run pipeline-analysis-next-steps.lock.yml \
+            --repo "$REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f aw_context="$context" \
+            -f pr_number="$PR_NUMBER" \
+            -f ci_head_sha="$HEAD_SHA"
+          echo "Dispatched analysis for PR #$PR_NUMBER."
+
+          # Auto-fix pushes a branch and opens a draft pull request, so it is limited to pull
+          # requests the author is actively asking for review on, from this repository.
+          if [ "$(jq -r '.isDraft' <<<"$pr")" = true ]; then
+            echo "Skipping auto-fix for draft PR #$PR_NUMBER."
+            exit 0
+          fi
+          if [ "$(jq -r '.isCrossRepository' <<<"$pr")" = true ]; then
+            echo "Skipping auto-fix for fork PR #$PR_NUMBER."
+            exit 0
+          fi
+
+          gh workflow run pipeline-analysis-auto-fix.lock.yml \
+            --repo "$REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f pr_number="$PR_NUMBER" \
+            -f ci_head_sha="$HEAD_SHA" \
+            -f validation_base_ref="$(jq -r '.baseRefName' <<<"$pr")"
+          echo "Dispatched auto-fix for PR #$PR_NUMBER."
+
+  # A generated fix targets the original pull request's base branch first, purely so Azure
+  # Pipelines will run against it. Only once that CI is green is it retargeted at the pull
+  # request it is meant to fix.
+  validate:
+    if: >
+      github.event_name == 'check_run' &&
+      github.event.check_run.check_suite.app.slug == 'azure-pipelines' &&
+      endsWith(github.event.check_run.name, '- pullrequest') &&
+      github.event.check_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      pull-requests: write
+    concurrency:
+      group: pipeline-analysis-validate-${{ github.event.check_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Retarget a validated fix and notify the original pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          FIX_SHA: ${{ github.event.check_run.head_sha }}
+          FIX_PR: ${{ github.event.check_run.pull_requests[0].number }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$FIX_PR" ]; then
+            FIX_PR="$(
+              gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" \
+                --jq ".[] | select(.head.sha == \"$FIX_SHA\") | .number" |
+                head -1
+            )"
+          fi
+          if [ -z "$FIX_PR" ]; then
+            echo "No open pull request found for fix commit $FIX_SHA."
+            exit 0
+          fi
+
+          fix="$(
+            gh pr view "$FIX_PR" --repo "$REPOSITORY" \
+              --json baseRefName,headRefName,headRefOid,state,url
+          )"
+          if [ "$(jq -r '.state' <<<"$fix")" != OPEN ] ||
+             [ "$(jq -r '.headRefOid' <<<"$fix")" != "$FIX_SHA" ]; then
+            echo "Fix PR #$FIX_PR is closed or has moved."
+            exit 0
+          fi
+
+          fix_ref="$(jq -r '.headRefName' <<<"$fix")"
+          if ! [[ "$fix_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]]; then
+            echo "Not a pipeline auto-fix branch: $fix_ref"
+            exit 0
+          fi
+          original_pr="${BASH_REMATCH[1]}"
+          original_sha="${BASH_REMATCH[2]}"
+
+          original="$(
+            gh pr view "$original_pr" --repo "$REPOSITORY" \
+              --json headRefName,headRefOid,state
+          )"
+          original_ref="$(jq -r '.headRefName' <<<"$original")"
+          if [ "$(jq -r '.state' <<<"$original")" != OPEN ] ||
+             [ "$(jq -r '.headRefOid' <<<"$original")" != "$original_sha" ]; then
+            echo "Original PR #$original_pr is closed or has moved past $original_sha."
+            exit 0
+          fi
+
+          # Retargeting is the idempotency marker: a second rollup completing on the same fix
+          # commit finds the base already switched and stops without commenting twice.
+          if [ "$(jq -r '.baseRefName' <<<"$fix")" = "$original_ref" ]; then
+            echo "Fix PR #$FIX_PR already targets $original_ref."
+            exit 0
+          fi
+
+          rollups() {
+            gh api --paginate "repos/$REPOSITORY/commits/$1/check-runs?per_page=100" \
+              --jq '.check_runs[]
+                    | select(.app.slug == "azure-pipelines")
+                    | select(.name | endswith("- pullrequest"))
+                    | [.name, .status, .conclusion]
+                    | @tsv'
+          }
+
+          rollups "$original_sha" > original-rollups.tsv
+          rollups "$FIX_SHA" > fix-rollups.tsv
+
+          # Every rollup that failed on the original commit has to be green on the fix, and the
+          # fix must not have broken a rollup that was previously passing.
+          if awk -F'\t' '$3 == "failure" { found = 1 } END { exit !found }' fix-rollups.tsv; then
+            echo "The fix branch still has a failing pipeline."
+            exit 0
+          fi
+
+          failed_pipelines="$(
+            awk -F'\t' '$2 == "completed" && $3 == "failure" { print $1 }' original-rollups.tsv
+          )"
+          if [ -z "$failed_pipelines" ]; then
+            echo "No failed rollups recorded on $original_sha; nothing to validate."
+            exit 0
+          fi
+
+          validated=""
+          while IFS= read -r pipeline; do
+            [ -n "$pipeline" ] || continue
+            result="$(
+              awk -F'\t' -v name="$pipeline" \
+                '$1 == name && $2 == "completed" { print $3; exit }' fix-rollups.tsv
+            )"
+            if [ "$result" != success ]; then
+              echo "Original failure '$pipeline' has not passed on the fix branch yet."
+              exit 0
+            fi
+            validated="${validated}- \`${pipeline}\`"$'\n'
+          done <<<"$failed_pipelines"
+
+          gh api -X PATCH "repos/$REPOSITORY/pulls/$FIX_PR" -f base="$original_ref" >/dev/null
+
+          {
+            printf '### Automated fix passed Azure Pipelines\n\n'
+            printf '%s passed the pipeline rollups that failed on this pull request:\n\n' \
+              "$(jq -r '.url' <<<"$fix")"
+            printf '%s\n' "$validated"
+            printf 'The draft fix now targets this pull request branch. '
+            printf 'Review and merge it to apply the change.\n'
+          } > comment.md
+          gh pr comment "$original_pr" --repo "$REPOSITORY" --body-file comment.md
+
+  # Auto-fix branches are cheap to recreate, so anything without an open pull request is dropped
+  # after a week rather than left to accumulate.
+  cleanup:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Delete expired fix branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cutoff="$(( $(date -u +%s) - 7 * 86400 ))"
+
+          gh api --paginate \
+            "repos/$REPOSITORY/git/matching-refs/heads/copilot-pipeline-fix/" \
+            --jq '.[].ref' |
+            sed 's#^refs/heads/##' |
+            while read -r branch; do
+              [ -n "$branch" ] || continue
+
+              open_prs="$(
+                gh pr list --repo "$REPOSITORY" --state open \
+                  --head "$branch" --json number --jq length
+              )"
+              if [ "$open_prs" -gt 0 ]; then
+                echo "keep   $branch (open PR)"
+                continue
+              fi
+
+              committed="$(
+                gh api "repos/$REPOSITORY/commits/$branch" \
+                  --jq '.commit.committer.date' 2>/dev/null || true
+              )"
+              [ -n "$committed" ] || continue
+              if [ "$(date -u -d "$committed" +%s)" -ge "$cutoff" ]; then
+                echo "keep   $branch ($committed)"
+                continue
+              fi
+
+              gh api -X DELETE "repos/$REPOSITORY/git/refs/heads/$branch"
+              echo "delete $branch ($committed)"
+            done
