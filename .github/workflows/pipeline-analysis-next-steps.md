@@ -133,9 +133,12 @@ Analyze the failed Azure Pipelines run for pull request
    and say that the detailed build log was unavailable.
 3. If `${{ github.event.inputs.ci_head_sha }}` is set, compare it with the PR's current head.
    Use `noop` if the PR has moved.
-4. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and
-   `.github/skills/azsdk-common-pipeline-analysis/references/failure-patterns.md` with the `view`
-   tool. Follow their diagnosis guidance, but use the comment format below.
+4. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
+   `references/failure-patterns.md` with the `view` tool, and follow their diagnosis guidance.
+   Which skills a repository ships differs by language, so if that skill is not present, list
+   `.github/skills/` and use any equivalent pipeline analysis or troubleshooting skill it does
+   have; if there is none, analyse from `pipeline-analysis.txt` alone rather than stopping.
+   Either way, use the comment format below.
 5. If the analysis only names a test-result artifact and more detail is needed, run:
    `azsdk ci test-results "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"`.
 6. Use `add-comment` once.

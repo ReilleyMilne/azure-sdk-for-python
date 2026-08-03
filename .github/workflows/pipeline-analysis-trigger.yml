@@ -4,13 +4,16 @@
 #
 #   dispatch  Azure Pipelines PR CI fails  -> run the analysis agent, then the auto-fix agent
 #             once analysis has reported an actual failure, record the draft fix in the analysis
-#             comment, then hand that fix to `validate`.
+#             comment, then hand that fix to `validate`. One attempt per commit: re-running a
+#             pipeline raises a fresh `check_run`, and the concurrency group and the
+#             already-analysed check below stop that becoming a second fix pull request.
 #   validate  Dispatched with a fix pull request -> wait for its CI, then act on it. On the
 #             half-hourly cron -> sweep every open fix pull request without waiting, which
 #             recovers anything the dispatched run missed.
 #             Acting means: record the fix's CI results on the fix pull request, and if they are
 #             green retarget it at the pull request it fixes and list the pipelines it fixed in
-#             the analysis comment. If its CI failed, drop the fix note from that comment.
+#             the analysis comment. If its CI failed, say so there instead and point the author
+#             at `@copilot`.
 #   cleanup   Daily -> delete generated fix branches that no longer back an open pull request.
 #
 # `validate` is reached by `workflow_dispatch` and cron rather than by the fix branch's
@@ -52,9 +55,16 @@ jobs:
       github.event_name == 'check_run' &&
       github.event.check_run.check_suite.app.slug == 'azure-pipelines' &&
       endsWith(github.event.check_run.name, '- pullrequest') &&
-      github.event.check_run.conclusion == 'failure'
+      (github.event.check_run.conclusion == 'failure' ||
+       github.event.check_run.conclusion == 'timed_out')
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # Re-running a pipeline produces a fresh `check_run` on the same commit, so without this a
+    # retried failure would start a second analysis and a second auto-fix, and the fix branch
+    # prefix contains the run id, so that second fix would open its own draft pull request.
+    concurrency:
+      group: pipeline-analysis-dispatch-${{ github.event.check_run.head_sha }}
+      cancel-in-progress: false
     permissions:
       actions: write
       pull-requests: write
@@ -102,6 +112,21 @@ jobs:
           esac
 
           context="$(printf '{"item_type":"pull_request","item_number":%s}' "$PR_NUMBER")"
+          run_title="Pipeline Analysis / PR #$PR_NUMBER / $HEAD_SHA"
+
+          # The concurrency group above serialises retries of the same commit; this is what makes
+          # the second one a no-op rather than a duplicate attempt.
+          existing="$(
+            gh run list --repo "$REPOSITORY" \
+              --workflow pipeline-analysis-next-steps.lock.yml --limit 100 \
+              --json displayTitle \
+              --jq "[.[] | select(.displayTitle == \"$run_title\")] | length"
+          )"
+          if [ "$existing" != 0 ]; then
+            echo "PR #$PR_NUMBER has already been analysed at $HEAD_SHA."
+            exit 0
+          fi
+
           dispatched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run pipeline-analysis-next-steps.lock.yml \
             --repo "$REPOSITORY" \
@@ -132,7 +157,6 @@ jobs:
           # this repository: a user-dispatched run delivered the event, a GITHUB_TOKEN-
           # dispatched one did not.
           echo "Waiting for the analysis comment on PR #$PR_NUMBER..."
-          run_title="Pipeline Analysis / PR #$PR_NUMBER / $HEAD_SHA"
           analysed=false
           for _ in $(seq 1 60); do
             sleep 20
@@ -213,6 +237,10 @@ jobs:
             printf '### Attempted Copilot Fix\n\n'
             printf 'PR: [#%s](%s) attempted to fix the pipeline failures found by the analysis.\n' \
               "$fix_number" "$fix_url"
+            printf '\n**Next steps:** The draft PR'"'"'s pipelines are still running. This note '
+            printf 'will be updated once they finish. Review the change now if you like, but wait '
+            printf 'for that update before merging: until it passes, the draft targets the base '
+            printf 'branch rather than this one.\n'
           } > addition.md
 
           comment_id="$(
@@ -366,8 +394,8 @@ jobs:
               gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
           }
 
-          # Rewrites the fix section of the analysis comment in place. `$2` is a file holding the
-          # replacement section, or /dev/null to drop the section entirely.
+          # Rewrites the fix section of the analysis comment in place, so the pull request keeps
+          # one pipeline-analysis thread however many times the fix's state changes.
           set_fix_section() {
             local original_pr="$1" addition="$2" comment_id
 
@@ -437,14 +465,28 @@ jobs:
 
             # Every rollup that failed on the original commit has to be green on the fix, and the
             # fix must not have broken a rollup that was previously passing.
-            if awk -F'\t' '$3 == "failure" { found = 1 } END { exit !found }' fix-rollups.tsv; then
-              echo "#$fix_pr: still has a failing pipeline; dropping the fix note."
-              set_fix_section "$original_pr" /dev/null
+            if awk -F'\t' '$3 == "failure" || $3 == "timed_out" { found = 1 } END { exit !found }' \
+                 fix-rollups.tsv; then
+              {
+                printf '%s\n\n' "$FIX_SECTION_MARKER"
+                printf -- '---\n\n'
+                printf '### Attempted Copilot Fix\n\n'
+                printf 'PR: [#%s](%s) attempted to fix the pipeline failures found by the ' \
+                  "$fix_pr" "$(jq -r '.url' <<<"$fix")"
+                printf 'analysis, but failed.\n'
+                printf '\n**Next steps:** Review the analysis above, or comment '
+                printf '`@copilot fix the pipeline failures` on this pull request to have Copilot '
+                printf 'try again.\n'
+              } > addition.md
+
+              echo "#$fix_pr: still has a failing pipeline."
+              set_fix_section "$original_pr" addition.md
               return 0
             fi
 
             failed_pipelines="$(
-              awk -F'\t' '$2 == "completed" && $3 == "failure" { print $1 }' original-rollups.tsv
+              awk -F'\t' '$2 == "completed" && ($3 == "failure" || $3 == "timed_out") { print $1 }' \
+                original-rollups.tsv
             )"
             if [ -z "$failed_pipelines" ]; then
               echo "#$fix_pr: no failed rollups recorded on $original_sha; nothing to validate."
@@ -481,6 +523,8 @@ jobs:
                 "$fix_pr" "$(jq -r '.url' <<<"$fix")"
               printf 'analysis. It successfully fixed the following pipelines:\n\n'
               printf '%s' "$validated"
+              printf '\n**Next steps:** Review the change and merge it into this branch to pick '
+              printf 'up the fix.\n'
             } > addition.md
 
             echo "#$fix_pr: validated."
