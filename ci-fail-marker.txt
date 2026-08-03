@@ -1,1 +1,0 @@
-This file makes the Analyze stage of test-trigger-pipeline.yml fail.
