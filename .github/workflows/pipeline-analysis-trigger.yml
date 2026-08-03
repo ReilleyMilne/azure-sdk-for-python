@@ -3,18 +3,24 @@
 # One plain workflow drives the whole loop so the agentic parts stay small:
 #
 #   dispatch  Azure Pipelines PR CI fails  -> run the analysis agent, then the auto-fix agent
-#             once analysis has reported an actual failure, then record the draft fix in the
-#             analysis comment.
-#   validate  Every 30 min -> record each draft fix's CI results on the fix pull request, and
-#             once they are green retarget it at the pull request it fixes and mark it validated
-#             in that same analysis comment.
+#             once analysis has reported an actual failure, record the draft fix in the analysis
+#             comment, then hand that fix to `validate`.
+#   validate  Dispatched with a fix pull request -> wait for its CI, then act on it. On the
+#             half-hourly cron -> sweep every open fix pull request without waiting, which
+#             recovers anything the dispatched run missed.
+#             Acting means: record the fix's CI results on the fix pull request, and if they are
+#             green retarget it at the pull request it fixes and list the pipelines it fixed in
+#             the analysis comment. If its CI failed, drop the fix note from that comment.
 #   cleanup   Daily -> delete generated fix branches that no longer back an open pull request.
 #
-# `validate` polls rather than reacting to the fix branch's `check_run` because GitHub does not
-# deliver those events for branches pushed with GITHUB_TOKEN. It records CI results on the fix
-# pull request before retargeting because changing the base makes Azure Pipelines re-run on the
-# same commit, and the default latest-filtered check runs then report the re-run instead of the
-# result that justified the retarget.
+# `validate` is reached by `workflow_dispatch` and cron rather than by the fix branch's
+# `check_run`, because GitHub does not deliver `check_run` or `workflow_run` events for anything
+# originating from GITHUB_TOKEN, which is every branch the auto-fix agent pushes.
+# `workflow_dispatch` is the one exception that does work, so it carries the chain.
+#
+# It records CI results on the fix pull request before retargeting because changing the base
+# makes Azure Pipelines re-run on the same commit, and the default latest-filtered check runs
+# then report the re-run instead of the result that justified the retarget.
 #
 # The agents (pipeline-analysis-next-steps.md, pipeline-analysis-auto-fix.md) never call GitHub
 # write APIs; every write below runs on the built-in GITHUB_TOKEN with a job-scoped permission
@@ -28,6 +34,11 @@ on:
     - cron: "*/30 * * * *"
     - cron: "0 6 * * *"
   workflow_dispatch:
+    inputs:
+      fix_pr:
+        description: Validate only this fix pull request, waiting for its CI to finish
+        required: false
+        type: string
 
 permissions: {}
 
@@ -163,22 +174,21 @@ jobs:
             -f validation_base_ref="$(jq -r '.baseRefName' <<<"$pr")"
           echo "Dispatched auto-fix for PR #$PR_NUMBER."
 
-          # The attempt is reported as soon as the draft exists, without waiting on its CI. The
-          # `validate` job below upgrades this note in place if the fix is later proven green,
-          # but it only fires when a CI trigger token is configured, so nothing that the author
-          # needs to see is allowed to depend on it.
+          # The attempt is reported as soon as the draft exists, without waiting on its CI, so
+          # the author sees it immediately. `validate` is then handed the fix and completes the
+          # note once CI has actually run.
           echo "Waiting for the auto-fix pull request..."
           fix_title="Pipeline Auto Fix / PR #$PR_NUMBER / $HEAD_SHA"
-          fix_url=""
+          fix=""
           for _ in $(seq 1 45); do
             sleep 20
 
-            fix_url="$(
+            fix="$(
               gh pr list --repo "$REPOSITORY" --state open --limit 100 \
-                --json url,headRefName \
-                --jq "[.[] | select(.headRefName | startswith(\"copilot-pipeline-fix/pr-$PR_NUMBER-$HEAD_SHA/\"))] | first | .url // empty"
+                --json number,url,headRefName \
+                --jq "[.[] | select(.headRefName | startswith(\"copilot-pipeline-fix/pr-$PR_NUMBER-$HEAD_SHA/\"))] | first // empty | @json"
             )"
-            [ -z "$fix_url" ] || break
+            [ -z "$fix" ] || break
 
             status="$(
               gh run list --repo "$REPOSITORY" \
@@ -190,21 +200,19 @@ jobs:
               break
             fi
           done
-          if [ -z "$fix_url" ]; then
+          if [ -z "$fix" ]; then
             echo "Auto-fix produced no pull request for PR #$PR_NUMBER."
             exit 0
           fi
+          fix_number="$(jq -r '.number' <<<"$fix")"
+          fix_url="$(jq -r '.url' <<<"$fix")"
 
-          base_ref="$(jq -r '.baseRefName' <<<"$pr")"
           {
             printf '%s\n\n' "$FIX_SECTION_MARKER"
             printf -- '---\n\n'
-            printf '### Copilot attempted a fix\n\n'
-            printf '%s is a draft pull request with a candidate fix for the failure above.\n\n' \
-              "$fix_url"
-            printf 'It targets `%s` so Azure Pipelines runs against it; check that pull request' \
-              "$base_ref"
-            printf ' for the result. The change is unverified, so review it before using it.\n'
+            printf '### Attempted Copilot Fix\n\n'
+            printf 'PR: [#%s](%s) attempted to fix the pipeline failures found by the analysis.\n' \
+              "$fix_number" "$fix_url"
           } > addition.md
 
           comment_id="$(
@@ -225,20 +233,28 @@ jobs:
             gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
           echo "Reported $fix_url in analysis comment $comment_id."
 
+          # Hand the fix to `validate` rather than waiting on its CI here, which would hold this
+          # runner for the whole of that CI. `workflow_dispatch` is used because it is the only
+          # trigger GitHub still delivers for work originating from GITHUB_TOKEN.
+          gh workflow run pipeline-analysis-trigger.yml \
+            --repo "$REPOSITORY" \
+            --ref "$DEFAULT_BRANCH" \
+            -f fix_pr="$fix_number"
+          echo "Dispatched validation for fix pull request #$fix_number."
+
   # A generated fix targets the original pull request's base branch first, purely so Azure
   # Pipelines will run against it. Only once that CI is green is it retargeted at the pull
   # request it is meant to fix.
   #
-  # This polls instead of reacting to the fix branch's `check_run` because GitHub does not
-  # deliver those events for branches pushed with GITHUB_TOKEN, which is every branch the
-  # auto-fix agent creates. Waiting inside the dispatch job instead would mean holding a runner
-  # for the entire duration of the fix branch's CI, so the wait happens between runs, not
-  # inside one.
+  # `dispatch` hands each new fix straight here, and this job waits for that one fix's CI. The
+  # half-hourly cron is the backstop: it sweeps every open fix without waiting, so a fix whose
+  # dispatched run timed out or was cancelled is still picked up.
   validate:
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.schedule == '*/30 * * * *'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       actions: read
       checks: read
@@ -251,6 +267,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
+          TARGET_FIX_PR: ${{ inputs.fix_pr }}
           ANALYSIS_MARKER: PR Pipeline Failure Analysis
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
           EVIDENCE_MARKER: "<!-- pipeline-analysis-ci-evidence -->"
@@ -349,10 +366,40 @@ jobs:
               gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
           }
 
+          # Rewrites the fix section of the analysis comment in place. `$2` is a file holding the
+          # replacement section, or /dev/null to drop the section entirely.
+          set_fix_section() {
+            local original_pr="$1" addition="$2" comment_id
+
+            comment_id="$(
+              gh api \
+                "repos/$REPOSITORY/issues/$original_pr/comments?per_page=100&sort=created&direction=desc" \
+                --jq "[.[] | select(.body | contains(\"$ANALYSIS_MARKER\"))] | first | .id // empty"
+            )"
+            if [ -z "$comment_id" ]; then
+              if [ -s "$addition" ]; then
+                gh pr comment "$original_pr" --repo "$REPOSITORY" --body-file "$addition" >/dev/null
+                echo "  posted a new comment on PR #$original_pr."
+              fi
+              return 0
+            fi
+
+            gh api "repos/$REPOSITORY/issues/comments/$comment_id" --jq '.body' > body.md
+            awk -v marker="$FIX_SECTION_MARKER" 'index($0, marker) { exit } { print }' \
+              body.md > trimmed.md
+            cat trimmed.md "$addition" > updated.md
+            if [ "$(cat updated.md)" = "$(cat body.md)" ]; then
+              return 0
+            fi
+            jq -Rs '{body: .}' updated.md |
+              gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
+            echo "  updated analysis comment $comment_id on PR #$original_pr."
+          }
+
           # Returns 0 unconditionally: one unfinished fix must not fail the whole sweep.
           validate_fix() {
             local fix="$1" fix_pr fix_ref fix_sha base_ref original_pr original_sha
-            local original original_ref failed_pipelines validated pipeline result comment_id
+            local original original_ref failed_pipelines validated pipeline result
 
             fix_pr="$(jq -r '.number' <<<"$fix")"
             fix_ref="$(jq -r '.headRefName' <<<"$fix")"
@@ -391,7 +438,8 @@ jobs:
             # Every rollup that failed on the original commit has to be green on the fix, and the
             # fix must not have broken a rollup that was previously passing.
             if awk -F'\t' '$3 == "failure" { found = 1 } END { exit !found }' fix-rollups.tsv; then
-              echo "#$fix_pr: still has a failing pipeline."
+              echo "#$fix_pr: still has a failing pipeline; dropping the fix note."
+              set_fix_section "$original_pr" /dev/null
               return 0
             fi
 
@@ -423,46 +471,53 @@ jobs:
 
             gh api -X PATCH "repos/$REPOSITORY/pulls/$fix_pr" -f base="$original_ref" >/dev/null
 
-            # Replace the "attempted a fix" note the dispatch job already wrote so the pull
+            # Complete the "attempted a fix" note the dispatch job already wrote, so the pull
             # request keeps a single pipeline-analysis thread.
             {
               printf '%s\n\n' "$FIX_SECTION_MARKER"
               printf -- '---\n\n'
-              printf '### Copilot'"'"'s fix passed Azure Pipelines\n\n'
-              printf '%s passed the pipeline rollups that failed on this pull request:\n\n' \
-                "$(jq -r '.url' <<<"$fix")"
-              printf '%s\n' "$validated"
-              printf 'It now targets this pull request branch. Retargeting re-runs Azure '
-              printf 'Pipelines on the same commit, so the checks on that pull request no longer '
-              printf 'show the validation result above; it is recorded in a comment there '
-              printf 'instead.\n'
+              printf '### Attempted Copilot Fix\n\n'
+              printf 'PR: [#%s](%s) attempted to fix the pipeline failures found by the ' \
+                "$fix_pr" "$(jq -r '.url' <<<"$fix")"
+              printf 'analysis. It successfully fixed the following pipelines:\n\n'
+              printf '%s' "$validated"
             } > addition.md
 
-            comment_id="$(
-              gh api \
-                "repos/$REPOSITORY/issues/$original_pr/comments?per_page=100&sort=created&direction=desc" \
-                --jq "[.[] | select(.body | contains(\"$ANALYSIS_MARKER\"))] | first | .id // empty"
-            )"
-            if [ -z "$comment_id" ]; then
-              gh pr comment "$original_pr" --repo "$REPOSITORY" --body-file addition.md
-              echo "#$fix_pr: validated; posted a new comment on PR #$original_pr."
-              return 0
-            fi
-
-            gh api "repos/$REPOSITORY/issues/comments/$comment_id" --jq '.body' > body.md
-            awk -v marker="$FIX_SECTION_MARKER" 'index($0, marker) { exit } { print }' \
-              body.md > trimmed.md
-            cat trimmed.md addition.md > updated.md
-            jq -Rs '{body: .}' updated.md |
-              gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
-            echo "#$fix_pr: validated; marked in analysis comment $comment_id on PR #$original_pr."
+            echo "#$fix_pr: validated."
+            set_fix_section "$original_pr" addition.md
             return 0
           }
 
-          gh pr list --repo "$REPOSITORY" --state open --limit 100 \
-            --json number,baseRefName,headRefName,headRefOid,url \
-            --jq '.[] | select(.headRefName | startswith("copilot-pipeline-fix/")) | @json' \
-            > candidates.jsonl
+          if [ -n "$TARGET_FIX_PR" ]; then
+            # Dispatched by `dispatch` for one specific fix. Azure Pipelines has not necessarily
+            # even queued yet, so wait for its rollups to finish before judging them.
+            echo "Waiting for CI on fix pull request #$TARGET_FIX_PR..."
+            for _ in $(seq 1 120); do
+              sha="$(
+                gh pr view "$TARGET_FIX_PR" --repo "$REPOSITORY" --json headRefOid \
+                  --jq '.headRefOid'
+              )"
+              rollups "$sha" > target-rollups.tsv
+              if [ -s target-rollups.tsv ] &&
+                 ! awk -F'\t' '$2 != "completed" { found = 1 } END { exit !found }' \
+                     target-rollups.tsv; then
+                echo "All $(wc -l < target-rollups.tsv) pipeline rollups have completed."
+                break
+              fi
+              sleep 30
+            done
+
+            gh pr view "$TARGET_FIX_PR" --repo "$REPOSITORY" \
+              --json number,baseRefName,headRefName,headRefOid,url,state \
+              --jq 'select(.state == "OPEN")
+                    | {number, baseRefName, headRefName, headRefOid, url}
+                    | @json' > candidates.jsonl
+          else
+            gh pr list --repo "$REPOSITORY" --state open --limit 100 \
+              --json number,baseRefName,headRefName,headRefOid,url \
+              --jq '.[] | select(.headRefName | startswith("copilot-pipeline-fix/")) | @json' \
+              > candidates.jsonl
+          fi
           echo "Checking $(wc -l < candidates.jsonl) open fix pull requests."
 
           while IFS= read -r fix; do
@@ -474,7 +529,7 @@ jobs:
   # after a week rather than left to accumulate.
   cleanup:
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.fix_pr) ||
       github.event.schedule == '0 6 * * *'
     runs-on: ubuntu-latest
     permissions:
