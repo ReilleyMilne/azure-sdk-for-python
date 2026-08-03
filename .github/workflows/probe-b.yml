@@ -1,0 +1,11 @@
+name: Probe B
+on:
+  workflow_run:
+    workflows: ["Probe A"]
+    types: [completed]
+permissions: {}
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "probe B ran from workflow_run of ${{ github.event.workflow_run.name }}"
