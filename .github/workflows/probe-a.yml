@@ -1,9 +1,0 @@
-name: Probe A
-on:
-  workflow_dispatch:
-permissions: {}
-jobs:
-  a:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "probe A ran"
