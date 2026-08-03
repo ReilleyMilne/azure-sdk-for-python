@@ -5,12 +5,16 @@
 #   dispatch  Azure Pipelines PR CI fails  -> run the analysis agent, then the auto-fix agent
 #             once analysis has reported an actual failure, then record the draft fix in the
 #             analysis comment.
-#   validate  Every 30 min -> retarget any draft fix whose CI has gone green at the pull request
-#             it fixes, and mark it validated in that same comment.
+#   validate  Every 30 min -> record each draft fix's CI results on the fix pull request, and
+#             once they are green retarget it at the pull request it fixes and mark it validated
+#             in that same analysis comment.
 #   cleanup   Daily -> delete generated fix branches that no longer back an open pull request.
 #
 # `validate` polls rather than reacting to the fix branch's `check_run` because GitHub does not
-# deliver those events for branches pushed with GITHUB_TOKEN.
+# deliver those events for branches pushed with GITHUB_TOKEN. It records CI results on the fix
+# pull request before retargeting because changing the base makes Azure Pipelines re-run on the
+# same commit, and the default latest-filtered check runs then report the re-run instead of the
+# result that justified the retarget.
 #
 # The agents (pipeline-analysis-next-steps.md, pipeline-analysis-auto-fix.md) never call GitHub
 # write APIs; every write below runs on the built-in GITHUB_TOKEN with a job-scoped permission
@@ -236,6 +240,7 @@ jobs:
       github.event.schedule == '*/30 * * * *'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       checks: read
       pull-requests: write
     concurrency:
@@ -248,6 +253,7 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           ANALYSIS_MARKER: PR Pipeline Failure Analysis
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
+          EVIDENCE_MARKER: "<!-- pipeline-analysis-ci-evidence -->"
         run: |
           set -euo pipefail
 
@@ -260,14 +266,98 @@ jobs:
                     | @tsv'
           }
 
+          # tsv columns: result, name, url, started. Rendered newest-last.
+          rows() {
+            sort -t"$(printf '\t')" -k4 "$1" |
+              awk -F'\t' -v source="$2" '
+                {
+                  icon = "⏳"
+                  if ($1 == "success") icon = "✅"
+                  else if ($1 == "failure" || $1 == "timed_out") icon = "❌"
+                  else if ($1 == "queued" || $1 == "in_progress" || $1 == "waiting" ||
+                           $1 == "pending" || $1 == "requested") icon = "⏳"
+                  else icon = "⚠️"
+                  printf "| %s %s | [%s](%s) | %s | %s |\n", icon, $1, $2, $3, source, substr($4, 1, 16)
+                }'
+          }
+
+          # The record of what CI actually said while the fix was still targeting the validation
+          # branch. Retargeting makes Azure Pipelines re-run on the same commit and the default
+          # `filter=latest` check-runs view then reports the re-run instead, so without this the
+          # evidence that justified the retarget is not visible anywhere.
+          write_evidence() {
+            local fix_pr="$1" fix_sha="$2" base_ref="$3" original_ref="$4" frozen="$5"
+            local comment_id
+
+            gh api --paginate "repos/$REPOSITORY/commits/$fix_sha/check-runs?per_page=100" \
+              --jq '.check_runs[]
+                    | select(.app.slug == "azure-pipelines")
+                    | [(.conclusion // .status), .name, .html_url, .started_at]
+                    | @tsv' > ado.tsv
+            gh api --paginate "repos/$REPOSITORY/actions/runs?head_sha=$fix_sha&per_page=100" \
+              --jq '.workflow_runs[]
+                    | [(.conclusion // .status), .name, .html_url, .created_at]
+                    | @tsv' > gha.tsv
+
+            {
+              printf '%s\n' "$EVIDENCE_MARKER"
+              if [ "$frozen" = true ]; then
+                printf '### CI results before retargeting\n\n'
+              else
+                printf '### CI results on the validation branch\n\n'
+              fi
+              printf 'Commit `%s`, checked while this pull request targeted `%s`.\n\n' \
+                "$fix_sha" "$base_ref"
+              printf '| Result | Check | Source | Started (UTC) |\n'
+              printf '|---|---|---|---|\n'
+              rows ado.tsv "Azure Pipelines"
+              rows gha.tsv "GitHub Actions"
+              printf '\n'
+              if [ "$frozen" = true ]; then
+                printf '> [!IMPORTANT]\n'
+                printf '> These are the results that gated the retarget. This pull request has\n'
+                printf '> since been retargeted from `%s` to `%s`, which makes Azure Pipelines\n' \
+                  "$base_ref" "$original_ref"
+                printf '> re-run on the same commit against a different base. **The checks shown\n'
+                printf '> on this pull request now come from that re-run and will not match the\n'
+                printf '> table above.** The table is the record; the live checks are not.\n'
+              else
+                printf 'This draft targets `%s` only so Azure Pipelines will run against it. ' \
+                  "$base_ref"
+                printf 'Once every pipeline that failed on the original pull request passes here, '
+                printf 'it is retargeted and this table is frozen as the record of that result.\n'
+              fi
+            } > evidence.md
+
+            comment_id="$(
+              gh api \
+                "repos/$REPOSITORY/issues/$fix_pr/comments?per_page=100&sort=created&direction=desc" \
+                --jq "[.[] | select(.body | contains(\"$EVIDENCE_MARKER\"))] | first | .id // empty"
+            )"
+            if [ -z "$comment_id" ]; then
+              gh pr comment "$fix_pr" --repo "$REPOSITORY" --body-file evidence.md >/dev/null
+              return 0
+            fi
+
+            # The sweep runs 48 times a day; only edit when something actually changed, so the
+            # comment is not marked edited on every pass.
+            gh api "repos/$REPOSITORY/issues/comments/$comment_id" --jq '.body' > existing.md
+            if [ "$(cat existing.md)" = "$(cat evidence.md)" ]; then
+              return 0
+            fi
+            jq -Rs '{body: .}' evidence.md |
+              gh api -X PATCH "repos/$REPOSITORY/issues/comments/$comment_id" --input - >/dev/null
+          }
+
           # Returns 0 unconditionally: one unfinished fix must not fail the whole sweep.
           validate_fix() {
-            local fix="$1" fix_pr fix_ref fix_sha original_pr original_sha original original_ref
-            local failed_pipelines validated pipeline result comment_id
+            local fix="$1" fix_pr fix_ref fix_sha base_ref original_pr original_sha
+            local original original_ref failed_pipelines validated pipeline result comment_id
 
             fix_pr="$(jq -r '.number' <<<"$fix")"
             fix_ref="$(jq -r '.headRefName' <<<"$fix")"
             fix_sha="$(jq -r '.headRefOid' <<<"$fix")"
+            base_ref="$(jq -r '.baseRefName' <<<"$fix")"
 
             if ! [[ "$fix_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]]; then
               return 0
@@ -280,17 +370,20 @@ jobs:
                 --json headRefName,headRefOid,state
             )"
             original_ref="$(jq -r '.headRefName' <<<"$original")"
+
+            # Already retargeted: the evidence comment is frozen and must not be refreshed,
+            # because the live checks are now the post-retarget re-run.
+            if [ "$base_ref" = "$original_ref" ]; then
+              return 0
+            fi
+
             if [ "$(jq -r '.state' <<<"$original")" != OPEN ] ||
                [ "$(jq -r '.headRefOid' <<<"$original")" != "$original_sha" ]; then
               echo "#$fix_pr: original PR #$original_pr is closed or has moved past $original_sha."
               return 0
             fi
 
-            # Retargeting is the idempotency marker: a later sweep finds the base already
-            # switched and stops without rewriting the comment.
-            if [ "$(jq -r '.baseRefName' <<<"$fix")" = "$original_ref" ]; then
-              return 0
-            fi
+            write_evidence "$fix_pr" "$fix_sha" "$base_ref" "$original_ref" false
 
             rollups "$original_sha" > original-rollups.tsv
             rollups "$fix_sha" > fix-rollups.tsv
@@ -324,6 +417,10 @@ jobs:
               validated="${validated}- \`${pipeline}\`"$'\n'
             done <<<"$failed_pipelines"
 
+            # Freeze the evidence before retargeting, not after: the re-run starts within
+            # seconds of the base change and overwrites the latest-filtered check runs.
+            write_evidence "$fix_pr" "$fix_sha" "$base_ref" "$original_ref" true
+
             gh api -X PATCH "repos/$REPOSITORY/pulls/$fix_pr" -f base="$original_ref" >/dev/null
 
             # Replace the "attempted a fix" note the dispatch job already wrote so the pull
@@ -335,8 +432,10 @@ jobs:
               printf '%s passed the pipeline rollups that failed on this pull request:\n\n' \
                 "$(jq -r '.url' <<<"$fix")"
               printf '%s\n' "$validated"
-              printf 'The draft fix now targets this pull request branch. '
-              printf 'Review and merge it to apply the change.\n'
+              printf 'It now targets this pull request branch. Retargeting re-runs Azure '
+              printf 'Pipelines on the same commit, so the checks on that pull request no longer '
+              printf 'show the validation result above; it is recorded in a comment there '
+              printf 'instead.\n'
             } > addition.md
 
             comment_id="$(
