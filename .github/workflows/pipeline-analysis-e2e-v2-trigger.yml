@@ -71,6 +71,7 @@ jobs:
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2129
 
           # check_run.pull_requests is empty for fork pull requests. Take the most recently
           # updated match; awk, not `head -1`, which SIGPIPEs the paginating gh.
@@ -364,7 +365,7 @@ jobs:
           echo "Reported $fix_url in analysis comment $comment_id."
 
           # Hand off rather than wait here, which would hold this runner for the whole CI run.
-          gh workflow run pipeline-analysis-trigger.yml \
+          gh workflow run pipeline-analysis-e2e-v2-trigger.yml \
             --repo "$REPOSITORY" \
             --ref "$DEFAULT_BRANCH" \
             -f fix_pr="$fix_number"
@@ -504,6 +505,7 @@ jobs:
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
         run: |
           set -euo pipefail
+          # shellcheck disable=SC2016
 
           {
             printf '%s\n\n' "$FIX_SECTION_MARKER"
@@ -542,7 +544,7 @@ jobs:
               --body-file recovered.md >/dev/null
           fi
 
-          gh workflow run pipeline-analysis-trigger.yml \
+          gh workflow run pipeline-analysis-e2e-v2-trigger.yml \
             --repo "$REPOSITORY" \
             --ref "$DEFAULT_BRANCH" \
             -f fix_pr="$FIX_NUMBER"
