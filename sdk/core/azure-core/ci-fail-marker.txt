@@ -1,1 +1,0 @@
-This file intentionally makes the fork-only Analyze stage fail for the pipeline-analysis E2E demo.
