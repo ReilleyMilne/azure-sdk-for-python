@@ -1,0 +1,1 @@
+This new marker intentionally fails the fork Analyze stage for the E2E demo.
