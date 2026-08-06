@@ -28,7 +28,7 @@
 # The agents (pipeline-analysis-next-steps.md, pipeline-analysis-auto-fix.md) never call GitHub
 # write APIs; every write below runs on the built-in GITHUB_TOKEN with a job-scoped permission
 # set.
-name: Pipeline Analysis Trigger
+name: Pipeline Analysis Trigger E2E
 
 on:
   check_run:
@@ -264,7 +264,7 @@ jobs:
           # Hand the fix to `validate` rather than waiting on its CI here, which would hold this
           # runner for the whole of that CI. `workflow_dispatch` is used because it is the only
           # trigger GitHub still delivers for work originating from GITHUB_TOKEN.
-          gh workflow run pipeline-analysis-trigger.yml \
+          gh workflow run pipeline-analysis-e2e-trigger.yml \
             --repo "$REPOSITORY" \
             --ref "$DEFAULT_BRANCH" \
             -f fix_pr="$fix_number"
