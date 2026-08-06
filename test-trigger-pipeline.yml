@@ -1,160 +1,46 @@
-# Mock Azure DevOps pipeline used ONLY to exercise the pipeline-analysis workflows in a personal
-# fork. It stands in for a real language pipeline (e.g. `python - pullrequest`) cheaply.
+# Fork-only Azure Pipelines fixture for the pipeline-analysis E2E demo.
 #
-# It is shaped deliberately to reproduce three properties of the real pipelines that the
-# fix-validation workflow depends on:
-#
-#   1. MULTI-STAGE. Azure DevOps publishes one GitHub check run per stage/job, named
-#      `<pipeline> (<stage> <job>)`, plus a rollup named `<pipeline>`. The fix-validation
-#      workflow compares those per-stage legs, so a single-job pipeline (which publishes only a
-#      rollup) cannot exercise the real code path.
-#
-#   2. CONDITIONALLY RED. The Analyze stage fails only while `ci-fail-marker.txt` exists at the
-#      repo root. That gives a failure an agent can actually repair - the fix is to delete the
-#      file - so the loop can genuinely go red -> green. A pipeline that always fails can never
-#      validate a fix.
-#
-#   3. TRIGGERED ON EVERY PR BRANCH. The automated fix is published as a draft PR whose base is
-#      the *contributor's* branch, not `main`. With `pr.branches.include: [main]` that PR would
-#      receive no CI at all and the validation loop would never wake up.
-#
-# The Verify stage always passes and runs independently of Analyze, so it stays green across both
-# runs - that gives the validation workflow a stable leg to prove its "no regressions" check
-# against.
+# A PR fails while sdk/core/azure-core/ci-fail-marker.txt exists. The generated fix can safely
+# delete that file because production auto-fixes are restricted to sdk/**. Verify stays green so
+# validation also proves the fix did not regress an already-passing pipeline stage.
 
-trigger: none          # never run on branch pushes; this pipeline is PR-only
+trigger: none
 
 pr:
   branches:
     include:
-      - '*'            # includes fix PRs targeting a contributor branch, not just main
-  drafts: true         # the automated fix PR is always a draft
+      - '*'
+  drafts: true
 
 pool:
-  name: Default        # self-hosted agent pool; see setup-ado-agent.sh to bring an agent online
+  name: Default
 
 stages:
-  - stage: RetargetValidationGate
-    displayName: Retarget validation gate
-    condition: |
-      and(
-        eq(variables['Build.Reason'], 'PullRequest'),
-        or(
-          startsWith(variables['System.PullRequest.SourceBranch'], 'copilot-pipeline-fix/'),
-          startsWith(variables['System.PullRequest.SourceBranch'], 'refs/heads/copilot-pipeline-fix/')
-        ),
-        ne(replace(variables['System.PullRequest.TargetBranch'], 'refs/heads/', ''), 'main')
-      )
-    jobs:
-      - job: CheckValidation
-        displayName: Check validation
-        steps:
-          - checkout: none
-          - bash: |
-              set -euo pipefail
-              source_ref="$PR_SOURCE_REF"
-              source_ref="${source_ref#refs/heads/}"
-              target_ref="$PR_TARGET_REF"
-              target_ref="${target_ref#refs/heads/}"
-
-              skip=false
-              if [[ "$source_ref" =~ ^copilot-pipeline-fix/pr-([0-9]+)-([0-9a-f]{40})/ ]] &&
-                 [[ "$FIX_PR_NUMBER" =~ ^[0-9]+$ ]]; then
-                original_pr="${BASH_REMATCH[1]}"
-                original_sha="${BASH_REMATCH[2]}"
-                repository_uri="$REPOSITORY_URI"
-                repository="${repository_uri#https://github.com/}"
-                repository="${repository%.git}"
-                repository="${repository%/}"
-                api="https://api.github.com/repos/$repository"
-                pr_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
-                  "$api/pulls/$original_pr" 2>/dev/null || true)"
-                fix_pr_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
-                  "$api/pulls/$FIX_PR_NUMBER" 2>/dev/null || true)"
-                source_sha="$(jq -r '.head.sha // empty' <<<"$fix_pr_json")"
-                checks_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' \
-                  "$api/commits/$source_sha/check-runs?per_page=100" 2>/dev/null || true)"
-                if [ -n "$pr_json" ] && [ -n "$fix_pr_json" ] &&
-                   [ -n "$source_sha" ] && [ -n "$checks_json" ] &&
-                   [ "$(jq -r '.state' <<<"$pr_json")" = "open" ] &&
-                   [ "$(jq -r '.head.sha' <<<"$pr_json")" = "$original_sha" ] &&
-                   [ "$(jq -r '.head.ref' <<<"$pr_json")" = "$target_ref" ] &&
-                   [ "$(jq -r '.state' <<<"$fix_pr_json")" = "open" ] &&
-                   [ "$(jq -r '.head.ref' <<<"$fix_pr_json")" = "$source_ref" ] &&
-                   [ "$(jq -r '.base.ref' <<<"$fix_pr_json")" = "$target_ref" ] &&
-                   jq -e '
-                     any(.check_runs[];
-                       .app.slug == "github-actions" and
-                       .name == "Pipeline Analysis - Validated Fix" and
-                       .conclusion == "success")
-                   ' <<<"$checks_json" >/dev/null; then
-                  skip=true
-                fi
-              fi
-              echo "##vso[task.setvariable variable=skipDuplicateValidation;isOutput=true]$skip"
-            name: checkValidation
-            displayName: Verify validated-fix attestation
-            env:
-              PR_SOURCE_REF: $(System.PullRequest.SourceBranch)
-              PR_TARGET_REF: $(System.PullRequest.TargetBranch)
-              FIX_PR_NUMBER: $(System.PullRequest.PullRequestNumber)
-              REPOSITORY_URI: $(Build.Repository.Uri)
-
-  - stage: RetargetNoOp
-    displayName: Retarget no-op
-    dependsOn: RetargetValidationGate
-    condition: eq(dependencies.RetargetValidationGate.outputs['CheckValidation.checkValidation.skipDuplicateValidation'], 'true')
-    jobs:
-      - job: RetargetNoOp
-        displayName: Retarget no-op
-        steps:
-          - checkout: none
-          - script: |
-              echo "The generated fix was already validated against main."
-              echo "Skipping duplicate validation after retargeting to $PR_TARGET_REF."
-            displayName: Skip duplicate PR validation
-            env:
-              PR_TARGET_REF: $(System.PullRequest.TargetBranch)
-
   - stage: Analyze
     displayName: Analyze
-    dependsOn:
-      - RetargetValidationGate
-      - RetargetNoOp
-    condition: ne(dependencies.RetargetValidationGate.outputs['CheckValidation.checkValidation.skipDuplicateValidation'], 'true')
     jobs:
       - job: Analyze
         displayName: Analyze
         steps:
           - checkout: self
-          - script: |
+          - bash: |
               set -euo pipefail
-              MARKER="$(Build.SourcesDirectory)/ci-fail-marker.txt"
-              if [ -f "$MARKER" ]; then
-                echo "##vso[task.logissue type=error]Analyze failed: ci-fail-marker.txt is present at the repository root."
-                echo ""
-                echo "This is a simulated lint/analyze failure."
-                echo "To fix it, delete the file 'ci-fail-marker.txt' from the repository root."
-                echo ""
-                echo "--- marker contents ---"
-                cat "$MARKER"
+              marker="$(Build.SourcesDirectory)/sdk/core/azure-core/ci-fail-marker.txt"
+              if [ -f "$marker" ]; then
+                echo "##vso[task.logissue type=error]Analyze failed: sdk/core/azure-core/ci-fail-marker.txt is present."
+                echo "Delete sdk/core/azure-core/ci-fail-marker.txt to fix this simulated failure."
+                cat "$marker"
                 exit 1
               fi
-              echo "Analyze passed: no ci-fail-marker.txt present."
+              echo "Analyze passed: the failure marker is absent."
             displayName: Check for failure marker
 
   - stage: Verify
     displayName: Verify
-    # Verify shares only the lightweight gate dependencies with Analyze, so the two validation
-    # stages still run in parallel and report independently on the red baseline.
-    dependsOn:
-      - RetargetValidationGate
-      - RetargetNoOp
-    condition: ne(dependencies.RetargetValidationGate.outputs['CheckValidation.checkValidation.skipDuplicateValidation'], 'true')
     jobs:
       - job: Verify
         displayName: Verify
         steps:
           - checkout: self
-          - script: echo "Verify passed."
+          - bash: echo "Verify passed."
             displayName: Always succeeds
