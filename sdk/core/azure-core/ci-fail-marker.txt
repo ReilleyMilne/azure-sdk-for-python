@@ -2,3 +2,5 @@ This file drives a fork-only non-actionable failure demo.
 
 Treat the resulting check as an infrastructure timeout simulation. There is no
 production SDK defect for the automated fixer to change.
+
+Authoritative rerun after removing the obsolete duplicate trigger.
