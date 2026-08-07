@@ -30,12 +30,12 @@ network:
     - github
     - dev.azure.com
     - aka.ms
+    - containers
 
 checkout:
   sparse-checkout: |
     eng
     .github/skills
-    .github/hooks
 
 steps:
   - name: Install azsdk CLI
@@ -45,40 +45,33 @@ steps:
       ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $dir
       Add-Content -Path $env:GITHUB_PATH -Value $dir
 
-  - name: Analyze failed pipeline
+      $mcpDir = Join-Path $env:RUNNER_TEMP 'azsdk-mcp'
+      New-Item -ItemType Directory -Path $mcpDir -Force | Out-Null
+      $mcpExecutable = Join-Path $mcpDir 'azsdk'
+      Copy-Item (Join-Path $dir 'azsdk') $mcpExecutable
+      chmod +x $mcpExecutable
+      if ($LASTEXITCODE) {
+        throw "Failed to mark the Azure SDK MCP executable."
+      }
+
+  - name: Collect fallback check context
     shell: bash
     env:
       GITHUB_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.inputs.pr_number }}
       PR_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
-      PR_URL: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"
     run: |
-      set -uo pipefail
-      status=0
-      azsdk ci analyze "$PR_URL" > pipeline-analysis.txt 2>&1 || status=$?
-
-      # "No failed builds found" is the only acceptable non-zero exit; the rest are real errors.
-      if [ "$status" -ne 0 ] &&
-         ! grep -qF "No failed Azure Pipeline builds found" pipeline-analysis.txt; then
-        sed 's/^::/ ::/' pipeline-analysis.txt
-        echo "::error::azsdk ci analyze failed with exit code $status"
-        exit "$status"
-      fi
-
-      # azsdk reports "No failed Azure Pipeline builds found" for any Azure DevOps organization
-      # it is not authorised against, so append the Checks API as an independent second source.
-      {
-        echo
-        echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} ====="
-        gh api --paginate \
-          "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
-          --jq '.check_runs[]
-                | select(.app.slug == "azure-pipelines")
-                | select(.conclusion == "failure" or .conclusion == "timed_out")
-                | "- \(.name) [\(.conclusion)]: \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
-          2>/dev/null || echo "(could not read check runs)"
-      } >> pipeline-analysis.txt
+      set -euo pipefail
+      echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} =====" \
+        > pipeline-analysis.txt
+      gh api --paginate \
+        "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
+        --jq '.check_runs[]
+              | select(.app.slug == "azure-pipelines")
+              | select(.conclusion == "failure" or .conclusion == "timed_out")
+              | "- \(.name) [\(.conclusion)]: \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
+        >> pipeline-analysis.txt
 
       # Build output is pull-request-controlled; log workflow commands in it as plain text.
       sed 's/^::/ ::/' pipeline-analysis.txt
@@ -91,7 +84,22 @@ tools:
     - "head"
     - "tail"
     - "wc"
-    - "azsdk ci test-results:*"
+
+mcp-servers:
+  azure-sdk-mcp:
+    container: "mcr.microsoft.com/dotnet/runtime-deps:8.0-noble"
+    args:
+      - "-v"
+      - "${RUNNER_TEMP}/azsdk-mcp/azsdk:/usr/local/bin/azsdk:ro"
+    entrypoint: "/usr/local/bin/azsdk"
+    entrypointArgs: ["mcp"]
+    env:
+      GH_TOKEN: "${{ github.token }}"
+      GITHUB_TOKEN: "${{ github.token }}"
+    allowed:
+      - azsdk_analyze_pipeline
+      - azsdk_get_failed_test_run_data
+      - azsdk_get_failed_test_case_data
 
 safe-outputs:
   mentions: false
@@ -123,22 +131,25 @@ Analyze the failed Azure Pipelines run for pull request
 
 ## Process
 
-1. Read `pipeline-analysis.txt`. It has two sections: the `azsdk ci analyze` diagnosis, and a
-   `Failing checks on ... PR #...` list read from the GitHub Checks API.
-2. Use `noop` only if the file is empty or *both* sections report nothing. `No failed Azure
-   Pipeline builds found` on its own is not enough, because azsdk cannot see every Azure DevOps
-   organization: analyze the failing checks instead and say the detailed build log was
-   unavailable.
-3. If `${{ github.event.inputs.ci_head_sha }}` is set, compare it with the PR's current head.
+1. If `${{ github.event.inputs.ci_head_sha }}` is set, compare it with the PR's current head.
    Use `noop` if the PR has moved.
-4. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
+2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
    `references/failure-patterns.md` with the `view` tool and follow their diagnosis guidance.
    If that skill is absent, list `.github/skills/` and use any equivalent pipeline analysis or
-   troubleshooting skill; if there is none, analyse from `pipeline-analysis.txt` alone. Use the
-   comment format below either way.
-5. If the analysis only names a test-result artifact and more detail is needed, run:
-   `azsdk ci test-results "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"`.
-6. Use `add-comment` once.
+   troubleshooting skill.
+3. Call `azsdk_analyze_pipeline` with
+   `pipelineIdentifier: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"`.
+   Treat `pipeline-analysis.txt` as fallback context only if the MCP analysis is missing data.
+4. Inspect every `failed_pipeline_tests` entry returned by the analysis. For each unique
+   `artifact_file_path`, call `azsdk_get_failed_test_run_data` exactly once with
+   `failedTestRunsPath` set to that path. Use `azsdk_get_failed_test_case_data` only when one
+   exact `testCaseTitle` needs targeted follow-up. Never diagnose or classify fixability from
+   test titles alone.
+5. Group evidence by build, platform, artifact file, and failed test. Preserve platform-specific
+   failures even when titles overlap, but consolidate failures that share one demonstrated root
+   cause.
+6. Use `noop` only if the MCP analysis and fallback check context both report no failures.
+7. Use `add-comment` once.
 
 ## Comment format
 
@@ -153,6 +164,8 @@ Analyze the failed Azure Pipelines run for pull request
 ### Recommended next steps
 - <specific action supported by the failure data>
 - See https://aka.ms/ci-fix
+
+**Automated fix:** <eligible | not eligible — reason>
 
 <details>
 <summary>Relevant pipeline output</summary>
@@ -170,4 +183,10 @@ Analyze the failed Azure Pipelines run for pull request
 - Do not modify code or use GitHub write tools. The comment must use the safe output.
 - Ground every claim in the analysis. If the cause is unclear, say so and link to the logs.
 - Recommend a rerun for infrastructure failures; recommend code changes only for code failures.
+- Write exactly `**Automated fix:** eligible` only for a deterministic, high-confidence code
+  failure that can be fixed under `sdk/` and is supported by task errors with file/line evidence
+  or detailed test error/stack data. For incomplete artifacts, non-completed builds,
+  infrastructure, authentication, DNS/429, agent failures, timeout, flaky, live-test, ambiguous,
+  or out-of-scope failures, write
+  `**Automated fix:** not eligible — <brief reason>`.
 - Do not include real user mentions.
