@@ -3,3 +3,5 @@ This file intentionally makes the fork-only Analyze stage fail.
 The deterministic fix is to remove this SDK-scoped marker file.
 
 Authoritative rerun after removing the obsolete duplicate trigger.
+
+Parser-contract rerun.
