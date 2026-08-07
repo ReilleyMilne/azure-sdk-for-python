@@ -196,7 +196,10 @@ function Test-FixableAnalysisComment {
             ForEach-Object { $_.Trim() } |
             Where-Object { $_.StartsWith('**Automated fix:**', [System.StringComparison]::Ordinal) }
     )
-    return $classifications.Count -eq 1 -and $classifications[0] -ceq $FixableMarker
+    if ($classifications.Count -ne 1) { return $false }
+    $classification = $classifications[0]
+    return $classification -ceq $FixableMarker -or
+        $classification.StartsWith("$FixableMarker ", [System.StringComparison]::Ordinal)
 }
 
 function Set-FixSection {
