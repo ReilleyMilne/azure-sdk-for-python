@@ -74,7 +74,7 @@ function ConvertFrom-GhJson {
     if ([string]::IsNullOrWhiteSpace($Text)) { throw 'Expected JSON from gh, but received no output.' }
     try { $value = $Text | ConvertFrom-Json -Depth 100 } catch { throw "Invalid JSON from gh: $($_.Exception.Message)" }
     if ($null -eq $value) { throw 'Expected a JSON value from gh.' }
-    Write-Output -NoEnumerate $value
+    return ,$value
 }
 
 function ConvertFrom-GhJsonArray {
