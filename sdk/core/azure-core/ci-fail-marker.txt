@@ -6,3 +6,5 @@ Verification run for the hardened dispatch, compare-truncation, and
 run-name correlation changes.
 
 Retry after fixing array unrolling and UTC timestamp comparison.
+
+Third run: verifying analysis-comment detection after the marker fix.
