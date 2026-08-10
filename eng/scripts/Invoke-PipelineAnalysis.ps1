@@ -189,8 +189,10 @@ function Test-ContainsAnyMarker {
     return $false
 }
 
-# The HTML marker is the precise handle, but it is emitted by the agent and could in principle be
-# stripped by output sanitisation, so the human-readable heading is accepted as a fallback.
+# The primary marker is the human-readable summary heading, because gh-aw strips HTML comments out
+# of the workflow markdown when it compiles the prompt: an HTML marker never reaches the agent and
+# so is never emitted. The HTML marker is still accepted, since comments this script posts itself
+# are not subject to that stripping.
 function Get-AnalysisMarkers {
     $markers = @(Get-RequiredEnvironmentVariable 'ANALYSIS_MARKER')
     $fallback = Get-OptionalEnvironmentVariable 'ANALYSIS_MARKER_FALLBACK'
