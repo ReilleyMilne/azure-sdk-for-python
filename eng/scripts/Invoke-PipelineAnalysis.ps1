@@ -91,6 +91,23 @@ function Get-JsonProperty {
     return $property.Value
 }
 
+# ConvertFrom-Json turns ISO-8601 timestamps into [DateTime], and comparing one of those against a
+# string coerces the string through the *local* time zone. On any runner that is not set to UTC the
+# result is wrong by the UTC offset, which would let a comment posted before the dispatch look
+# newer than it is. Normalise both sides to UTC before comparing.
+function ConvertTo-UtcTime {
+    param([Parameter(Mandatory)]$Value)
+    if ($Value -is [DateTime]) {
+        $time = [DateTime]$Value
+        if ($time.Kind -eq [DateTimeKind]::Local) { return $time.ToUniversalTime() }
+        return [DateTime]::SpecifyKind($time, [DateTimeKind]::Utc)
+    }
+    return [DateTime]::Parse(
+        [string]$Value,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)
+}
+
 function Get-ApiObject {
     param([Parameter(Mandatory)][string]$Path)
     return ConvertFrom-GhJson (Invoke-Gh @('api', $Path))
@@ -101,7 +118,7 @@ function Get-ApiArray {
     $pages = ConvertFrom-GhJson (Invoke-Gh @('api', '--paginate', '--slurp', $Path))
     $items = @()
     foreach ($page in $pages) { $items += @($page) }
-    return ,$items
+    return $items
 }
 
 function Write-GithubOutput {
@@ -127,7 +144,7 @@ function Get-AzureSuites {
         'api', '--paginate', '--slurp', "repos/$Repository/commits/$Sha/check-suites?per_page=100"
     ))
     $suites = foreach ($page in $pages) { @(Get-JsonProperty $page 'check_suites') }
-    return ,@($suites | Where-Object { (Get-JsonProperty (Get-JsonProperty $_ 'app') 'slug') -eq 'azure-pipelines' })
+    return @($suites | Where-Object { (Get-JsonProperty (Get-JsonProperty $_ 'app') 'slug') -eq 'azure-pipelines' })
 }
 
 function Test-SuitesComplete {
@@ -149,7 +166,7 @@ function Get-AzureRollups {
     # and only the job-level names carry a ' (<job>)' suffix. This suffix is the only signal the
     # checks API exposes, so a pipeline whose display name contains ' (' would be misread as a job.
     $runs = foreach ($page in $pages) { @(Get-JsonProperty $page 'check_runs') }
-    return ,@($runs | Where-Object {
+    return @($runs | Where-Object {
         $app = Get-JsonProperty $_ 'app'
         (Get-JsonProperty $app 'slug') -eq 'azure-pipelines' -and -not (Get-JsonProperty $_ 'name').Contains(' (')
     })
@@ -161,7 +178,7 @@ function Get-CheckRuns {
         'api', '--paginate', '--slurp', "repos/$Repository/commits/$Sha/check-runs?per_page=100"
     ))
     $runs = foreach ($page in $pages) { @(Get-JsonProperty $page 'check_runs') }
-    return ,@($runs)
+    return @($runs)
 }
 
 function Test-ContainsAnyMarker {
@@ -178,6 +195,8 @@ function Get-AnalysisMarkers {
     $markers = @(Get-RequiredEnvironmentVariable 'ANALYSIS_MARKER')
     $fallback = Get-OptionalEnvironmentVariable 'ANALYSIS_MARKER_FALLBACK'
     if (-not [string]::IsNullOrWhiteSpace($fallback)) { $markers += $fallback }
+    # Callers assign this directly rather than collecting it with @(), so the comma is required to
+    # keep a single marker an array. Do not add @() at a call site without removing the comma.
     return ,$markers
 }
 
@@ -189,7 +208,7 @@ function Get-LatestAnalysisComment {
         [string]$RequiredText = ''
     )
     $comments = Get-ApiArray "repos/$Repository/issues/$OriginalPr/comments?per_page=100"
-    return ,@($comments | Where-Object {
+    return @($comments | Where-Object {
         $body = [string](Get-JsonProperty $_ 'body')
         (Get-JsonProperty (Get-JsonProperty $_ 'user') 'login') -eq 'github-actions[bot]' -and
         (Test-ContainsAnyMarker $body $Markers) -and
@@ -209,14 +228,15 @@ function Get-AnalysisCommentsSince {
     $output = Try-Invoke-Gh @(
         'api', '--paginate', '--slurp', "repos/$Repository/issues/$OriginalPr/comments?per_page=100"
     )
-    if ($null -eq $output) { return ,@() }
+    if ($null -eq $output) { return @() }
     $pages = ConvertFrom-GhJson $output
     $comments = foreach ($page in $pages) { @($page) }
-    return ,@($comments | Where-Object {
+    $since = ConvertTo-UtcTime $Since
+    return @($comments | Where-Object {
         (Get-JsonProperty (Get-JsonProperty $_ 'user') 'login') -eq 'github-actions[bot]' -and
-        (Get-JsonProperty $_ 'created_at') -gt $Since -and
+        (ConvertTo-UtcTime (Get-JsonProperty $_ 'created_at')) -gt $since -and
         (Test-ContainsAnyMarker ([string](Get-JsonProperty $_ 'body')) $Markers)
-    } | Sort-Object { Get-JsonProperty $_ 'created_at' } -Descending)
+    } | Sort-Object { ConvertTo-UtcTime (Get-JsonProperty $_ 'created_at') } -Descending)
 }
 
 function Update-AnalysisComment {
@@ -317,8 +337,8 @@ function Get-DispatchedRun {
         '--event', 'workflow_dispatch', '--created', ">=$SinceDate",
         '--limit', '100', '--json', ($Fields -join ',')
     )
-    if ($null -eq $output) { return ,@() }
-    return ,@(ConvertFrom-GhJsonArray $output |
+    if ($null -eq $output) { return @() }
+    return @(ConvertFrom-GhJsonArray $output |
         Where-Object { (Get-JsonProperty $_ 'displayTitle') -eq $Title } |
         Select-Object -First 1)
 }
@@ -347,6 +367,8 @@ function Get-ComparisonFilePaths {
     $property = $Comparison.PSObject.Properties['files']
     if ($null -ne $property -and $null -ne $property.Value) { $files = @($property.Value) }
     if ($files.Count -ge 300) { return $null }
+    # Callers assign this directly and test for $null to detect truncation, so the comma is required
+    # to keep an empty result distinguishable from $null. Do not add @() at a call site.
     return ,@($files | ForEach-Object { [string](Get-JsonProperty $_ 'filename') })
 }
 
