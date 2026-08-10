@@ -159,7 +159,6 @@ Analyze the failed Azure Pipelines run for pull request
 ## Comment format
 
 ````markdown
-<!-- pipeline-analysis-comment -->
 <details>
 <summary><strong>[Pilot] PR Pipeline Failure Analysis</strong></summary>
 
@@ -185,9 +184,11 @@ Analyze the failed Azure Pipelines run for pull request
 
 ## Rules
 
-- The `<!-- pipeline-analysis-comment -->` marker and the `**Automated fix:**` line are parsed by
-  `eng/scripts/Invoke-PipelineAnalysis.ps1`. Emit both verbatim, emit the `**Automated fix:**`
-  line exactly once, and keep it between `### Recommended next steps` and the next `<details>`.
+- The `[Pilot] PR Pipeline Failure Analysis` summary heading and the `**Automated fix:**` line are
+  parsed by `eng/scripts/Invoke-PipelineAnalysis.ps1`. Emit both verbatim, emit the
+  `**Automated fix:**` line exactly once, and keep it between `### Recommended next steps` and the
+  next `<details>`. Do not use an HTML comment as a marker: the compiler strips HTML comments out
+  of this file, so one would never reach you.
 - Do not modify code or use GitHub write tools. The comment must use the safe output.
 - Ground every claim in the analysis. If the cause is unclear, say so and link to the logs.
 - Recommend a rerun for infrastructure failures; recommend code changes only for code failures.
