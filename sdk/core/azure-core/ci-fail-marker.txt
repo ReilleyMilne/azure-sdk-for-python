@@ -4,3 +4,5 @@ The deterministic fix is to remove this SDK-scoped marker file.
 
 Verification run for the hardened dispatch, compare-truncation, and
 run-name correlation changes.
+
+Retry after fixing array unrolling and UTC timestamp comparison.
