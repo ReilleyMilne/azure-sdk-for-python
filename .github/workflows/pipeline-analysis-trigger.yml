@@ -1,6 +1,13 @@
 # Deterministic glue for the pipeline-analysis agents. Agents emit only constrained safe outputs;
 # deterministic jobs perform writes with either job-scoped GITHUB_TOKEN permissions or the
 # repository's short-lived automation App token.
+#
+# Trust boundary: the analysis agent reads pull-request-controlled build logs, and the
+# `**Automated fix:** eligible` line it writes is what escalates this workflow from "comment" to
+# "generate code". That classification is therefore model output derived from untrusted input.
+# Containment - not the classification - is what makes this safe: the fix agent may only write
+# under sdk/, its work lands in a separate draft pull request, and a human decides whether to
+# merge it. Do not widen the fix agent's allowed paths or auto-merge its output.
 name: Pipeline Analysis Trigger
 
 on:
@@ -20,6 +27,8 @@ permissions: {}
 
 jobs:
   dispatch:
+    # Azure Pipelines publishes a rollup check run per pipeline plus one per job; only job-level
+    # names carry a ' (<job>)' suffix, so this filter keeps the rollups. React to rollups only.
     if: >
       vars.PIPELINE_ANALYSIS_ENABLED == 'true' &&
       github.event_name == 'check_run' &&
@@ -28,7 +37,7 @@ jobs:
       (github.event.check_run.conclusion == 'failure' ||
        github.event.check_run.conclusion == 'timed_out')
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 210
     concurrency:
       group: pipeline-analysis-dispatch-${{ github.event.check_run.head_sha }}
       cancel-in-progress: false
@@ -56,10 +65,20 @@ jobs:
           PR_NUMBER: ${{ github.event.check_run.pull_requests[0].number }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
           CHECK_NAME: Pipeline Analysis
-          ANALYSIS_MARKER: "PR Pipeline Failure Analysis"
+          ANALYSIS_MARKER: "<!-- pipeline-analysis-comment -->"
+          ANALYSIS_MARKER_FALLBACK: "PR Pipeline Failure Analysis"
           FIXABLE_MARKER: "**Automated fix:** eligible"
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
         run: pwsh -File eng/scripts/Invoke-PipelineAnalysis.ps1 -Action Dispatch
+      # The step above opens an in_progress check run and closes it in a finally block, which does
+      # not run when the job is cancelled or hits its timeout. Close it here so the check does not
+      # stay pending on the pull request forever.
+      - name: Close a stranded analysis check run
+        if: cancelled()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: pwsh -File eng/scripts/Invoke-PipelineAnalysis.ps1 -Action CloseCheck
 
   create-fix-pr:
     needs: dispatch
@@ -113,7 +132,8 @@ jobs:
           ORIGINAL_PR: ${{ needs.dispatch.outputs.original_pr }}
           FIX_NUMBER: ${{ steps.create.outputs.fix_number }}
           FIX_URL: ${{ steps.create.outputs.fix_url }}
-          ANALYSIS_MARKER: "PR Pipeline Failure Analysis"
+          ANALYSIS_MARKER: "<!-- pipeline-analysis-comment -->"
+          ANALYSIS_MARKER_FALLBACK: "PR Pipeline Failure Analysis"
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
         run: pwsh -File eng/scripts/Invoke-PipelineAnalysis.ps1 -Action ReportFixAndDispatchValidation
 
@@ -142,7 +162,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TARGET_FIX_PR: ${{ inputs.fix_pr }}
-          ANALYSIS_MARKER: "PR Pipeline Failure Analysis"
+          ANALYSIS_MARKER: "<!-- pipeline-analysis-comment -->"
+          ANALYSIS_MARKER_FALLBACK: "PR Pipeline Failure Analysis"
           FIX_SECTION_MARKER: "<!-- pipeline-analysis-fix -->"
         run: pwsh -File eng/scripts/Invoke-PipelineAnalysis.ps1 -Action Validate
 

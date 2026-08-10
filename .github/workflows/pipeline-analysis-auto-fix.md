@@ -76,6 +76,7 @@ steps:
   - name: Collect fallback check context
     shell: bash
     env:
+      GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.inputs.pr_number }}
@@ -111,6 +112,7 @@ tools:
 
 mcp-servers:
   azure-sdk-mcp:
+    type: stdio
     container: "mcr.microsoft.com/dotnet/runtime-deps:8.0-noble"
     args:
       - "-v"
@@ -134,7 +136,6 @@ safe-outputs:
     signed-commits: false
     branch-prefix: "copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
     base-branch: ${{ github.event.repository.default_branch }}
-    allowed-branches: ["copilot-pipeline-fix/*"]
     allowed-files:
       - "sdk/**"
     expires: 7
@@ -188,7 +189,9 @@ the deterministic trigger retargets the draft to the original pull request branc
    ambiguous, and out-of-scope failures must use `noop`.
 6. Make the smallest change that fixes the demonstrated failure. Only files under `sdk/` can be
    committed; do not touch `.github/`, `eng/`, or dependency files.
-7. Use `create-pull-request` once.
+7. Immediately before using `create-pull-request`, verify again that the PR is open and its
+   current head is `${{ github.event.inputs.ci_head_sha }}`. Use `noop` if it moved or closed.
+8. Use `create-pull-request` once.
 
 ## Pull request content
 

@@ -57,6 +57,7 @@ steps:
   - name: Collect fallback check context
     shell: bash
     env:
+      GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.inputs.pr_number }}
@@ -87,6 +88,7 @@ tools:
 
 mcp-servers:
   azure-sdk-mcp:
+    type: stdio
     container: "mcr.microsoft.com/dotnet/runtime-deps:8.0-noble"
     args:
       - "-v"
@@ -135,6 +137,7 @@ Analyze the failed Azure Pipelines run for pull request
    Use `noop` if the PR has moved.
 2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
    `references/failure-patterns.md` with the `view` tool and follow their diagnosis guidance.
+   This job is dispatched on, and checks out, the default branch, so `.github/skills/` is trusted.
    If that skill is absent, list `.github/skills/` and use any equivalent pipeline analysis or
    troubleshooting skill.
 3. Call `azsdk_analyze_pipeline` with
@@ -149,7 +152,9 @@ Analyze the failed Azure Pipelines run for pull request
    failures even when titles overlap, but consolidate failures that share one demonstrated root
    cause.
 6. Use `noop` only if the MCP analysis and fallback check context both report no failures.
-7. Use `add-comment` once.
+7. Immediately before using `add-comment`, verify again that the PR is open and its current head
+   is `${{ github.event.inputs.ci_head_sha }}`. Use `noop` if it moved or closed.
+8. Use `add-comment` once.
 
 ## Comment format
 
@@ -180,6 +185,9 @@ Analyze the failed Azure Pipelines run for pull request
 
 ## Rules
 
+- The `<!-- pipeline-analysis-comment -->` marker and the `**Automated fix:**` line are parsed by
+  `eng/scripts/Invoke-PipelineAnalysis.ps1`. Emit both verbatim, emit the `**Automated fix:**`
+  line exactly once, and keep it between `### Recommended next steps` and the next `<details>`.
 - Do not modify code or use GitHub write tools. The comment must use the safe output.
 - Ground every claim in the analysis. If the cause is unclear, say so and link to the logs.
 - Recommend a rerun for infrastructure failures; recommend code changes only for code failures.
