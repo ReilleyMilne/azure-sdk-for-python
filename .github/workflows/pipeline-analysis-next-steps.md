@@ -181,18 +181,26 @@ safe-outputs:
 
 </details>
 
-**Automated fix:** <in progress | not eligible — reason>
+<for fixable failures only: **Automated fix:** in progress>
+
+<for non-fixable failures only:>
+> Copilot detected the failing pipeline and generated the analysis above. To have it attempt a
+> fix automatically, reply with `@copilot please fix the failing pipeline on this PR`.
 ````
 
-For infrastructure or authentication failures, explain the failure under `What failed`, include
-`azsdk azp analyze https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}`
-under `Recommended next steps`, and use `**Automated fix:** not eligible — <reason>`.
+For infrastructure or authentication failures, explain the failure under `What failed`. If an
+Azure DevOps pipeline is internal or private and cannot be accessed by the workflow, state under
+`Recommended next steps` that the workflow does not have the user's Azure DevOps identity and that
+they can analyze the pipeline by running this command locally while authenticated to Azure DevOps:
+
+```bash
+azsdk azp analyze https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}
+```
 
 ## Publish
 
 - Retrieve the pull request again. If it is not open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop without commenting or dispatching.
 - Call `publish_analysis` exactly once with the complete analysis and `fixable` if any failure is fixable; otherwise use `non-fixable`.
 - Call `add_comment` exactly once with item number `${{ needs.pre_activation.outputs.pr_number }}` and the same complete analysis.
-- Keep the `**Automated fix:**` line after the outer `</details>` so it is outside the collapsible analysis.
+- Keep the fix section after the outer `</details>` so it is outside the collapsible analysis.
 - For `fixable`, use `**Automated fix:** in progress` and call `dispatch_workflow` exactly once with this structure: `workflow_name: "pipeline-analysis-auto-fix"` and `inputs: { "pr_number": "${{ needs.pre_activation.outputs.pr_number }}", "ci_head_sha": "${{ needs.pre_activation.outputs.head_sha }}", "parent_run_id": "${{ github.run_id }}" }`. Do not place the workflow inputs at the top level.
-- For `non-fixable`, use `**Automated fix:** not eligible — <reason>` and do not dispatch a workflow.
