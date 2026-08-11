@@ -12,16 +12,25 @@ on:
       with:
         script: |
           const suite = context.payload.check_suite;
-          const shouldRun =
-            suite.app?.slug === "azure-pipelines" &&
-            suite.status === "completed" &&
-            suite.conclusion === "failure" &&
-            suite.pull_requests.length === 1;
-          core.setOutput("run_analysis", String(shouldRun));
-          if (!shouldRun) {
-            core.info("Skipping analysis because this is not a completed failing Azure Pipelines suite for exactly one pull request.");
+          core.setOutput("run_analysis", "false");
+          if (suite.app?.slug !== "azure-pipelines" || suite.pull_requests.length !== 1) {
+            core.info("Skipping analysis because this is not an Azure Pipelines suite for exactly one pull request.");
             return;
           }
+          const suites = await github.paginate(github.rest.checks.listSuitesForRef, {
+            ...context.repo,
+            ref: suite.head_sha,
+          });
+          const pipelineSuites = suites.filter(candidate => candidate.app?.slug === "azure-pipelines");
+          if (!pipelineSuites.length || pipelineSuites.some(candidate => candidate.status !== "completed")) {
+            core.info("Skipping analysis until all Azure Pipelines suites are completed.");
+            return;
+          }
+          if (!pipelineSuites.some(candidate => candidate.conclusion === "failure")) {
+            core.info("Skipping analysis because no Azure Pipelines suites failed.");
+            return;
+          }
+          core.setOutput("run_analysis", "true");
           core.setOutput("pr_number", String(suite.pull_requests[0].number));
           core.setOutput("head_sha", suite.head_sha);
 
