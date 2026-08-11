@@ -37,6 +37,8 @@ on:
 if: needs.pre_activation.outputs.run_analysis == 'true'
 
 permissions:
+  actions: read
+  checks: read
   contents: read
   copilot-requests: write
   pull-requests: read
@@ -117,7 +119,9 @@ safe-outputs:
   noop:
     report-as-issue: false
   add-comment:
+    max: 1
     target: ${{ needs.pre_activation.outputs.pr_number }}
+    hide-older-comments: true
   dispatch-workflow:
     workflows:
       - pipeline-analysis-auto-fix

@@ -15,6 +15,7 @@ on:
         description: Trigger run that requested this fix
         required: true
         type: string
+  bots: [github-actions]
   permissions:
     issues: read
     pull-requests: read
@@ -123,10 +124,14 @@ safe-outputs:
   noop:
     report-as-issue: false
   create-pull-request:
+    title-prefix: "[pipelin-fix] "
     draft: true
     max: 1
+    signed-commits: false
+    branch-prefix: "copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
     base-branch: ${{ github.event.repository.default_branch }}
     protected-files: fallback-to-issue
+    expires: 7
     if-no-changes: ignore
   jobs:
     retarget-fix-pr:
