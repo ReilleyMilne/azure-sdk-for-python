@@ -82,9 +82,29 @@ pre-agent-steps:
       PR_NUMBER="$(jq -r '.check_suite.pull_requests[0].number' "$GITHUB_EVENT_PATH")"
       mkdir -p /tmp/gh-aw /tmp/pipeline-analysis-artifacts
       cd /tmp/pipeline-analysis-artifacts
+
+      analysis_output="/tmp/gh-aw/pipeline-analysis.json"
+      analysis_started_epoch="$(date +%s)"
+      echo "Analysis target: https://github.com/${REPOSITORY}/pull/${PR_NUMBER}"
+      echo "Analysis started: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+      "$HOME/bin/azsdk" --version
+
+      report_analysis_timing() {
+        status=$?
+        analysis_finished_epoch="$(date +%s)"
+        echo "Analysis finished: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        echo "Analysis elapsed: $((analysis_finished_epoch - analysis_started_epoch)) seconds"
+        echo "Analysis exit status: ${status}"
+        if [[ -f "${analysis_output}" ]]; then
+          echo "Analysis output size: $(wc -c < "${analysis_output}") bytes"
+        fi
+      }
+      trap report_analysis_timing EXIT
+
       "$HOME/bin/azsdk" ci analyze \
         "https://github.com/${REPOSITORY}/pull/${PR_NUMBER}" \
-        --output json > /tmp/gh-aw/pipeline-analysis.json
+        --debug \
+        --output json > "${analysis_output}"
 
 tools:
   github:
