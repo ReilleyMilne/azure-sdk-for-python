@@ -105,16 +105,23 @@ def __getattr__(name: str):
 
             transport = TrioRequestsTransport
         except ImportError as ex:
-            if ex.msg.endswith("'requests'"):
-                raise ImportError("requests package is not installed") from ex
-            raise ImportError("trio package is not installed") from ex
+            msg = str(ex)
+            if "'requests'" in msg:
+                raise AttributeError(
+                    f"'{name}' requires the requests package; install it with: pip install requests"
+                ) from ex
+            raise AttributeError(
+                f"'{name}' requires the trio package; install it with: pip install trio"
+            ) from ex
     if name == "TrioRequestsTransportResponse":
         try:
             from ._requests_trio import TrioRequestsTransportResponse
 
             transport = TrioRequestsTransportResponse
         except ImportError as err:
-            raise ImportError("trio package is not installed") from err
+            raise AttributeError(
+                f"'{name}' requires the trio package; install it with: pip install trio"
+            ) from err
     if transport:
         return transport
     raise AttributeError(f"module 'azure.core.pipeline.transport' has no attribute {name}")
