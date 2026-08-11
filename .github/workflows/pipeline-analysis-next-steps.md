@@ -11,20 +11,21 @@ on:
       uses: actions/github-script@v9.0.0
       with:
         script: |
-          if (context.payload.check_suite.pull_requests.length !== 1) {
-            core.setFailed("Expected exactly one pull request associated with this suite.");
+          const suite = context.payload.check_suite;
+          const shouldRun =
+            suite.app?.slug === "azure-pipelines" &&
+            suite.status === "completed" &&
+            suite.conclusion === "failure" &&
+            suite.pull_requests.length === 1;
+          core.setOutput("run_analysis", String(shouldRun));
+          if (!shouldRun) {
+            core.info("Skipping analysis because this is not a completed failing Azure Pipelines suite for exactly one pull request.");
             return;
           }
-          core.setOutput("pr_number", String(context.payload.check_suite.pull_requests[0].number));
-          core.setOutput("head_sha", context.payload.check_suite.head_sha);
-          const suites = await github.paginate(github.rest.checks.listSuitesForRef, {
-            ...context.repo,
-            ref: context.payload.check_suite.head_sha,
-          });
-          if (suites.some(suite => suite.status !== "completed")) core.setFailed("Suites are still running.");
-          if (!suites.some(suite => suite.conclusion === "failure")) core.setFailed("No suites failed.");
+          core.setOutput("pr_number", String(suite.pull_requests[0].number));
+          core.setOutput("head_sha", suite.head_sha);
 
-if: needs.pre_activation.outputs.analysis_gate_result == 'success'
+if: needs.pre_activation.outputs.run_analysis == 'true'
 
 permissions:
   contents: read
@@ -53,6 +54,7 @@ tools:
 jobs:
   pre-activation:
     outputs:
+      run_analysis: ${{ steps.analysis_gate.outputs.run_analysis }}
       pr_number: ${{ steps.analysis_gate.outputs.pr_number }}
       head_sha: ${{ steps.analysis_gate.outputs.head_sha }}
 
