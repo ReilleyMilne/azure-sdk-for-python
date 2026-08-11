@@ -1,1 +1,1 @@
-fails analysis azure pipeline
+Fails the analysis azure pipeline.
