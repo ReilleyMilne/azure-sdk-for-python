@@ -124,11 +124,11 @@ safe-outputs:
   noop:
     report-as-issue: false
   create-pull-request:
-    title-prefix: "[pipelin-fix] "
+    title-prefix: "[pipeline-fix] "
     draft: true
     max: 1
     signed-commits: false
-    branch-prefix: "copilot-pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
+    branch-prefix: "pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
     base-branch: ${{ github.event.repository.default_branch }}
     protected-files: fallback-to-issue
     expires: 7
@@ -241,7 +241,7 @@ ${{ needs.pre_activation.outputs.analysis_comment }}
 1. Use `noop` unless the verified analysis demonstrates at least one deterministic, high-confidence code change. Infrastructure, authentication, timeout, flaky, live-test, ambiguous, incomplete, and out-of-scope failures are not eligible.
 2. Make the smallest source or test change that fixes the demonstrated failure. Do not modify workflow, pipeline, repository automation, or dependency files.
 3. If changes were made, call `create_pull_request` exactly once. Use the title
-  `[Pilot] Fix pipeline failure for #${{ github.event.inputs.pr_number }}`. In the body, identify the source pull request and failed commit, then summarize the diagnosis, change, and validation.
+  `Fix pipeline failure for #${{ github.event.inputs.pr_number }}`. In the body, identify the source pull request and failed commit, then summarize the diagnosis, change, and validation.
 4. Do not poll pull request checks or claim that the fix passed validation. State that validation is pending the automated checks triggered by the draft pull request.
 5. Call `retarget_fix_pr` exactly once with `requested: true`. It retargets the created draft
   pull request to the original pull request branch.
