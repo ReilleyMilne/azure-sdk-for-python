@@ -41,6 +41,11 @@ permissions:
   copilot-requests: write
   pull-requests: read
 
+checkout:
+  sparse-checkout: |
+    eng
+    .github/skills
+
 network:
   allowed:
     - defaults
@@ -70,9 +75,9 @@ pre-agent-steps:
       GH_TOKEN: ${{ github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       REPOSITORY: ${{ github.repository }}
-      PR_NUMBER: ${{ needs.pre_activation.outputs.pr_number }}
     run: |
       set -euo pipefail
+      PR_NUMBER="$(jq -r '.check_suite.pull_requests[0].number' "$GITHUB_EVENT_PATH")"
       mkdir -p /tmp/gh-aw /tmp/pipeline-analysis-artifacts
       cd /tmp/pipeline-analysis-artifacts
       "$HOME/bin/azsdk" ci analyze \
