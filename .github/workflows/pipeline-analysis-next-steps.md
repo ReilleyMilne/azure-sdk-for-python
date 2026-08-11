@@ -1,25 +1,32 @@
 ---
-description: Analyze a failed Azure SDK pull-request pipeline and post actionable next steps.
-run-name: "Pipeline Analysis / PR #${{ github.event.inputs.pr_number }} / ${{ github.event.inputs.ci_head_sha }}"
-
+description: Analyze failed Azure SDK pull-request pipelines.
 on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to analyze
-        required: true
-        type: string
-      ci_head_sha:
-        description: Failed pull request commit
-        required: true
-        type: string
+  check_suite:
+    types: [completed]
+  permissions:
+    checks: read
+  steps:
+    - name: Check whether analysis should run
+      id: analysis_gate
+      uses: actions/github-script@v9.0.0
+      with:
+        script: |
+          if (context.payload.check_suite.pull_requests.length !== 1) {
+            core.setFailed("Expected exactly one pull request associated with this suite.");
+            return;
+          }
+          core.setOutput("pr_number", String(context.payload.check_suite.pull_requests[0].number));
+          core.setOutput("head_sha", context.payload.check_suite.head_sha);
+          const suites = await github.paginate(github.rest.checks.listSuitesForRef, {
+            ...context.repo,
+            ref: context.payload.check_suite.head_sha,
+          });
+          if (suites.some(suite => suite.status !== "completed")) core.setFailed("Suites are still running.");
+          if (!suites.some(suite => suite.conclusion === "failure")) core.setFailed("No suites failed.");
 
-if: ${{ github.event_name == 'workflow_dispatch' }}
-engine: copilot
+if: needs.pre_activation.outputs.analysis_gate_result == 'success'
 
 permissions:
-  actions: read
-  checks: read
   contents: read
   copilot-requests: write
   pull-requests: read
@@ -30,131 +37,91 @@ network:
     - github
     - dev.azure.com
     - aka.ms
-    - containers
 
-checkout:
-  sparse-checkout: |
-    eng
-    .github/skills
-
-steps:
-  - name: Install azsdk CLI
+pre-agent-steps:
+  - name: Install Azure SDK MCP server
     shell: pwsh
     run: |
-      $dir = Join-Path $HOME 'bin'
-      ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $dir
-      Add-Content -Path $env:GITHUB_PATH -Value $dir
-
-      $mcpDir = Join-Path $env:RUNNER_TEMP 'azsdk-mcp'
-      New-Item -ItemType Directory -Path $mcpDir -Force | Out-Null
-      $mcpExecutable = Join-Path $mcpDir 'azsdk'
-      Copy-Item (Join-Path $dir 'azsdk') $mcpExecutable
-      chmod +x $mcpExecutable
-      if ($LASTEXITCODE) {
-        throw "Failed to mark the Azure SDK MCP executable."
-      }
-
-  - name: Collect fallback check context
-    shell: bash
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
-      GITHUB_REPOSITORY: ${{ github.repository }}
-      PR_NUMBER: ${{ github.event.inputs.pr_number }}
-      PR_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
-    run: |
-      set -euo pipefail
-      echo "===== Failing checks on ${GITHUB_REPOSITORY} PR #${PR_NUMBER} =====" \
-        > pipeline-analysis.txt
-      gh api --paginate \
-        "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}/check-runs?per_page=100" \
-        --jq '.check_runs[]
-              | select(.app.slug == "azure-pipelines")
-              | select(.conclusion == "failure" or .conclusion == "timed_out")
-              | "- \(.name) [\(.conclusion)]: \(.output.title // "no title")\n  \(.output.summary // "" | gsub("\n"; " "))\n  \(.details_url)"' \
-        >> pipeline-analysis.txt
-
-      # Build output is pull-request-controlled; log workflow commands in it as plain text.
-      sed 's/^::/ ::/' pipeline-analysis.txt
+      $installDirectory = Join-Path $HOME "bin"
+      ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $installDirectory
+      Add-Content -Path $env:GITHUB_PATH -Value $installDirectory
 
 tools:
   github:
-    toolsets: [pull_requests, actions]
-  bash:
-    - "cat"
-    - "head"
-    - "tail"
-    - "wc"
+    toolsets: [pull_requests]
+
+jobs:
+  pre-activation:
+    outputs:
+      pr_number: ${{ steps.analysis_gate.outputs.pr_number }}
+      head_sha: ${{ steps.analysis_gate.outputs.head_sha }}
 
 mcp-servers:
   azure-sdk-mcp:
-    type: stdio
-    container: "mcr.microsoft.com/dotnet/runtime-deps:8.0-noble"
-    args:
-      - "-v"
-      - "${RUNNER_TEMP}/azsdk-mcp/azsdk:/usr/local/bin/azsdk:ro"
-    entrypoint: "/usr/local/bin/azsdk"
-    entrypointArgs: ["mcp"]
+    command: azsdk
+    args: [mcp]
     env:
-      GH_TOKEN: "${{ github.token }}"
-      GITHUB_TOKEN: "${{ github.token }}"
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
     allowed:
       - azsdk_analyze_pipeline
       - azsdk_get_failed_test_run_data
       - azsdk_get_failed_test_case_data
 
 safe-outputs:
-  mentions: false
-  allowed-github-references: []
-  add-comment:
-    max: 1
-    target: "${{ github.event.inputs.pr_number }}"
-    hide-older-comments: true
   noop:
     report-as-issue: false
-  missing-tool:
-    create-issue: false
-  missing-data:
-    create-issue: false
-  report-incomplete:
-    create-issue: false
-  report-failure-as-issue: false
-
-timeout-minutes: 20
-concurrency: pipeline-analysis-${{ github.event.inputs.pr_number }}
+  add-comment:
+    target: ${{ needs.pre_activation.outputs.pr_number }}
+  dispatch-workflow:
+    workflows:
+      - pipeline-analysis-auto-fix
+    max: 1
+  jobs:
+    publish-analysis:
+      description: Publish the pipeline analysis and its fixability classification
+      runs-on: ubuntu-latest
+      needs: safe_outputs
+      inputs:
+        fixability:
+          type: choice
+          options: [fixable, non-fixable]
+          required: true
+        analysis:
+          type: string
+          required: true
+      steps:
+        - name: Read analysis
+          uses: actions/github-script@v9.0.0
+          with:
+            script: |
+              const fs = require("fs");
+              const output = JSON.parse(fs.readFileSync(process.env.GH_AW_AGENT_OUTPUT, "utf8"));
+              const item = output.items.find(item => item.type === "publish_analysis");
+              if (!item) {
+                core.setFailed("No pipeline analysis was produced.");
+                return;
+              }
 ---
 
-# Pipeline Analysis
-
-<!-- After editing this file, run 'gh aw compile pipeline-analysis-next-steps' to regenerate the lock file -->
-
-Analyze the failed Azure Pipelines run for pull request
-**#${{ github.event.inputs.pr_number }}** and post one concise comment.
+# Pipeline Analysis Next Steps
 
 ## Process
 
-1. If `${{ github.event.inputs.ci_head_sha }}` is set, compare it with the PR's current head.
-   Use `noop` if the PR has moved.
+1. Retrieve pull request `${{ needs.pre_activation.outputs.pr_number }}`. If it is not
+  open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
 2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
-   `references/failure-patterns.md` with the `view` tool and follow their diagnosis guidance.
-   This job is dispatched on, and checks out, the default branch, so `.github/skills/` is trusted.
-   If that skill is absent, list `.github/skills/` and use any equivalent pipeline analysis or
-   troubleshooting skill.
+  `references/failure-patterns.md`, then follow their diagnosis guidance.
 3. Call `azsdk_analyze_pipeline` with
-   `pipelineIdentifier: "https://github.com/${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}"`.
-   Treat `pipeline-analysis.txt` as fallback context only if the MCP analysis is missing data.
+  `pipelineIdentifier: "https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}"`.
 4. Inspect every `failed_pipeline_tests` entry returned by the analysis. For each unique
-   `artifact_file_path`, call `azsdk_get_failed_test_run_data` exactly once with
-   `failedTestRunsPath` set to that path. Use `azsdk_get_failed_test_case_data` only when one
-   exact `testCaseTitle` needs targeted follow-up. Never diagnose or classify fixability from
-   test titles alone.
+  `artifact_file_path`, call `azsdk_get_failed_test_run_data` exactly once with
+  `failedTestRunsPath` set to that path. Use `azsdk_get_failed_test_case_data` only when one
+  exact `testCaseTitle` needs targeted follow-up. Never diagnose or classify fixability from
+  test titles alone.
 5. Group evidence by build, platform, artifact file, and failed test. Preserve platform-specific
-   failures even when titles overlap, but consolidate failures that share one demonstrated root
-   cause.
-6. Use `noop` only if the MCP analysis and fallback check context both report no failures.
-7. Immediately before using `add-comment`, verify again that the PR is open and its current head
-   is `${{ github.event.inputs.ci_head_sha }}`. Use `noop` if it moved or closed.
-8. Use `add-comment` once.
+  failures when titles overlap, but consolidate failures with one demonstrated root cause.
+6. Categorize the failures and determine whether any are fixable by an automated code change.
 
 ## Comment format
 
@@ -165,12 +132,6 @@ Analyze the failed Azure Pipelines run for pull request
 ### What failed
 <failed pipeline, stage, job, or tests; include Azure DevOps links>
 
-### Recommended next steps
-- <specific action supported by the failure data>
-- See https://aka.ms/ci-fix
-
-**Automated fix:** <eligible | not eligible — reason>
-
 <details>
 <summary>Relevant pipeline output</summary>
 
@@ -180,22 +141,22 @@ Analyze the failed Azure Pipelines run for pull request
 
 </details>
 </details>
+
+### Recommended next steps
+- <specific action supported by the failure data>
+- See https://aka.ms/ci-fix
+
+**Automated fix:** <in progress | not eligible — reason>
 ````
 
-## Rules
+For infrastructure or authentication failures, explain the failure under `What failed`, include
+`azsdk azp analyze https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}`
+under `Recommended next steps`, and use `**Automated fix:** not eligible — <reason>`.
 
-- The `[Pilot] PR Pipeline Failure Analysis` summary heading and the `**Automated fix:**` line are
-  parsed by `eng/scripts/Invoke-PipelineAnalysis.ps1`. Emit both verbatim, emit the
-  `**Automated fix:**` line exactly once, and keep it between `### Recommended next steps` and the
-  next `<details>`. Do not use an HTML comment as a marker: the compiler strips HTML comments out
-  of this file, so one would never reach you.
-- Do not modify code or use GitHub write tools. The comment must use the safe output.
-- Ground every claim in the analysis. If the cause is unclear, say so and link to the logs.
-- Recommend a rerun for infrastructure failures; recommend code changes only for code failures.
-- Write exactly `**Automated fix:** eligible` only for a deterministic, high-confidence code
-  failure that can be fixed under `sdk/` and is supported by task errors with file/line evidence
-  or detailed test error/stack data. For incomplete artifacts, non-completed builds,
-  infrastructure, authentication, DNS/429, agent failures, timeout, flaky, live-test, ambiguous,
-  or out-of-scope failures, write
-  `**Automated fix:** not eligible — <brief reason>`.
-- Do not include real user mentions.
+## Publish
+
+- Retrieve the pull request again. If it is not open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop without commenting or dispatching.
+- Call `publish_analysis` exactly once with the complete analysis and `fixable` if any failure is fixable; otherwise use `non-fixable`.
+- Call `add_comment` exactly once with item number `${{ needs.pre_activation.outputs.pr_number }}` and the same complete analysis.
+- For `fixable`, use `**Automated fix:** in progress` and call `dispatch_workflow` once with inputs `pr_number: "${{ needs.pre_activation.outputs.pr_number }}"`, `ci_head_sha: "${{ needs.pre_activation.outputs.head_sha }}"`, and `parent_run_id: "${{ github.run_id }}"`.
+- For `non-fixable`, use `**Automated fix:** not eligible — <reason>` and do not dispatch a workflow.
