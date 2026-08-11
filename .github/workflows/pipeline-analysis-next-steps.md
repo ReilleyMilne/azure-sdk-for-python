@@ -185,11 +185,12 @@ safe-outputs:
 ```
 
 </details>
-</details>
 
 ### Recommended next steps
 - <specific action supported by the failure data>
 - See https://aka.ms/ci-fix
+
+</details>
 
 **Automated fix:** <in progress | not eligible — reason>
 ````
@@ -203,5 +204,6 @@ under `Recommended next steps`, and use `**Automated fix:** not eligible — <re
 - Retrieve the pull request again. If it is not open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop without commenting or dispatching.
 - Call `publish_analysis` exactly once with the complete analysis and `fixable` if any failure is fixable; otherwise use `non-fixable`.
 - Call `add_comment` exactly once with item number `${{ needs.pre_activation.outputs.pr_number }}` and the same complete analysis.
-- For `fixable`, use `**Automated fix:** in progress` and call `dispatch_workflow` once with inputs `pr_number: "${{ needs.pre_activation.outputs.pr_number }}"`, `ci_head_sha: "${{ needs.pre_activation.outputs.head_sha }}"`, and `parent_run_id: "${{ github.run_id }}"`.
+- Keep the `**Automated fix:**` line after the outer `</details>` so it is outside the collapsible analysis.
+- For `fixable`, use `**Automated fix:** in progress` and call `dispatch_workflow` exactly once with this structure: `workflow_name: "pipeline-analysis-auto-fix"` and `inputs: { "pr_number": "${{ needs.pre_activation.outputs.pr_number }}", "ci_head_sha": "${{ needs.pre_activation.outputs.head_sha }}", "parent_run_id": "${{ github.run_id }}" }`. Do not place the workflow inputs at the top level.
 - For `non-fixable`, use `**Automated fix:** not eligible — <reason>` and do not dispatch a workflow.
