@@ -71,40 +71,6 @@ pre-agent-steps:
       if ($LASTEXITCODE) {
         throw "Failed to mark the Azure SDK MCP executable."
       }
-  - name: Analyze pipeline failures
-    shell: bash
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
-      REPOSITORY: ${{ github.repository }}
-    run: |
-      set -euo pipefail
-      PR_NUMBER="$(jq -r '.check_suite.pull_requests[0].number' "$GITHUB_EVENT_PATH")"
-      mkdir -p /tmp/gh-aw /tmp/pipeline-analysis-artifacts
-      cd /tmp/pipeline-analysis-artifacts
-
-      analysis_output="/tmp/gh-aw/pipeline-analysis.json"
-      analysis_started_epoch="$(date +%s)"
-      echo "Analysis target: https://github.com/${REPOSITORY}/pull/${PR_NUMBER}"
-      echo "Analysis started: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-      "$HOME/bin/azsdk" --version
-
-      report_analysis_timing() {
-        status=$?
-        analysis_finished_epoch="$(date +%s)"
-        echo "Analysis finished: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-        echo "Analysis elapsed: $((analysis_finished_epoch - analysis_started_epoch)) seconds"
-        echo "Analysis exit status: ${status}"
-        if [[ -f "${analysis_output}" ]]; then
-          echo "Analysis output size: $(wc -c < "${analysis_output}") bytes"
-        fi
-      }
-      trap report_analysis_timing EXIT
-
-      "$HOME/bin/azsdk" ci analyze \
-        "https://github.com/${REPOSITORY}/pull/${PR_NUMBER}" \
-        --debug \
-        --output json > "${analysis_output}"
 
 tools:
   github:
@@ -117,14 +83,13 @@ mcp-servers:
     args:
       - "-v"
       - "${RUNNER_TEMP}/azsdk-mcp/azsdk:/usr/local/bin/azsdk:ro"
-      - "-v"
-      - "/tmp/pipeline-analysis-artifacts:/tmp/pipeline-analysis-artifacts:ro"
     entrypoint: "/usr/local/bin/azsdk"
     entrypointArgs: ["mcp"]
     env:
       GH_TOKEN: "${{ github.token }}"
       GITHUB_TOKEN: "${{ github.token }}"
     allowed:
+      - azsdk_analyze_pipeline
       - azsdk_get_failed_test_run_data
       - azsdk_get_failed_test_case_data
 
@@ -181,8 +146,8 @@ safe-outputs:
   open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
 2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
   `references/failure-patterns.md`, then follow their diagnosis guidance.
-3. Read `/tmp/gh-aw/pipeline-analysis.json`. It contains the trusted JSON output from the single
-  deterministic pipeline analysis invocation. Do not run pipeline analysis again.
+3. Call `azsdk_analyze_pipeline` with
+  `pipelineIdentifier: "https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}"`.
 4. Inspect every `failed_pipeline_tests` entry returned by the analysis. If an
   `artifact_file_path` is present, call `azsdk_get_failed_test_run_data` exactly once per unique
   artifact with `failedTestRunsPath` set to that path. Call `azsdk_get_failed_test_case_data` only
