@@ -218,7 +218,8 @@ safe-outputs:
               }
               const body = matches[0].body.replace(
                 "**Automated fix:** in progress",
-                `**Automated fix:** [fix proposed](${fixPrUrl})`
+                `Copilot opened a [draft fix](${fixPrUrl}) and triggered its checks. ` +
+                  "Review the changes and check results, then merge it if it resolves the failure."
               );
               await github.rest.issues.updateComment({
                 ...context.repo,
@@ -246,5 +247,5 @@ ${{ needs.pre_activation.outputs.analysis_comment }}
 5. Call `retarget_fix_pr` exactly once with `requested: true`. It retargets the created draft
   pull request to the original pull request branch.
 6. Call `update_analysis_comment` exactly once with `requested: true`. It waits for retargeting
-  to succeed, then updates the verified analysis comment to `fix proposed` with a link to the
-  draft pull request.
+  to succeed, then links the draft pull request from the verified analysis comment and tells the
+  author to review its changes and check results.
