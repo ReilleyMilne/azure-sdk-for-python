@@ -47,6 +47,7 @@ network:
     - github
     - dev.azure.com
     - aka.ms
+    - containers
 
 pre-agent-steps:
   - name: Install Azure SDK MCP server
@@ -54,11 +55,51 @@ pre-agent-steps:
     run: |
       $installDirectory = Join-Path $HOME "bin"
       ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $installDirectory
-      Add-Content -Path $env:GITHUB_PATH -Value $installDirectory
+
+      $mcpDirectory = Join-Path $env:RUNNER_TEMP "azsdk-mcp"
+      New-Item -ItemType Directory -Path $mcpDirectory -Force | Out-Null
+      $mcpExecutable = Join-Path $mcpDirectory "azsdk"
+      Copy-Item (Join-Path $installDirectory "azsdk") $mcpExecutable
+      chmod +x $mcpExecutable
+      if ($LASTEXITCODE) {
+        throw "Failed to mark the Azure SDK MCP executable."
+      }
+  - name: Analyze pipeline failures
+    shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      PR_NUMBER: ${{ needs.pre_activation.outputs.pr_number }}
+    run: |
+      set -euo pipefail
+      mkdir -p /tmp/gh-aw /tmp/pipeline-analysis-artifacts
+      cd /tmp/pipeline-analysis-artifacts
+      "$HOME/bin/azsdk" ci analyze \
+        "https://github.com/${REPOSITORY}/pull/${PR_NUMBER}" \
+        --output json > /tmp/gh-aw/pipeline-analysis.json
 
 tools:
   github:
     toolsets: [pull_requests]
+
+mcp-servers:
+  azure-sdk-mcp:
+    type: stdio
+    container: "mcr.microsoft.com/dotnet/runtime-deps:8.0-noble"
+    args:
+      - "-v"
+      - "${RUNNER_TEMP}/azsdk-mcp/azsdk:/usr/local/bin/azsdk:ro"
+      - "-v"
+      - "/tmp/pipeline-analysis-artifacts:/tmp/pipeline-analysis-artifacts:ro"
+    entrypoint: "/usr/local/bin/azsdk"
+    entrypointArgs: ["mcp"]
+    env:
+      GH_TOKEN: "${{ github.token }}"
+      GITHUB_TOKEN: "${{ github.token }}"
+    allowed:
+      - azsdk_get_failed_test_run_data
+      - azsdk_get_failed_test_case_data
 
 jobs:
   pre-activation:
@@ -66,18 +107,6 @@ jobs:
       run_analysis: ${{ steps.analysis_gate.outputs.run_analysis }}
       pr_number: ${{ steps.analysis_gate.outputs.pr_number }}
       head_sha: ${{ steps.analysis_gate.outputs.head_sha }}
-
-mcp-servers:
-  azure-sdk-mcp:
-    command: azsdk
-    args: [mcp]
-    env:
-      GH_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
-    allowed:
-      - azsdk_analyze_pipeline
-      - azsdk_get_failed_test_run_data
-      - azsdk_get_failed_test_case_data
 
 safe-outputs:
   noop:
@@ -123,13 +152,13 @@ safe-outputs:
   open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
 2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
   `references/failure-patterns.md`, then follow their diagnosis guidance.
-3. Call `azsdk_analyze_pipeline` with
-  `pipelineIdentifier: "https://github.com/${{ github.repository }}/pull/${{ needs.pre_activation.outputs.pr_number }}"`.
-4. Inspect every `failed_pipeline_tests` entry returned by the analysis. For each unique
-  `artifact_file_path`, call `azsdk_get_failed_test_run_data` exactly once with
-  `failedTestRunsPath` set to that path. Use `azsdk_get_failed_test_case_data` only when one
-  exact `testCaseTitle` needs targeted follow-up. Never diagnose or classify fixability from
-  test titles alone.
+3. Read `/tmp/gh-aw/pipeline-analysis.json`. It contains the trusted JSON output from the single
+  deterministic pipeline analysis invocation. Do not run pipeline analysis again.
+4. Inspect every `failed_pipeline_tests` entry returned by the analysis. If an
+  `artifact_file_path` is present, call `azsdk_get_failed_test_run_data` exactly once per unique
+  artifact with `failedTestRunsPath` set to that path. Call `azsdk_get_failed_test_case_data` only
+  when one exact `testCaseTitle` needs targeted follow-up. Never diagnose or classify fixability
+  from test titles alone.
 5. Group evidence by build, platform, artifact file, and failed test. Preserve platform-specific
   failures when titles overlap, but consolidate failures with one demonstrated root cause.
 6. Categorize the failures and determine whether any are fixable by an automated code change.
