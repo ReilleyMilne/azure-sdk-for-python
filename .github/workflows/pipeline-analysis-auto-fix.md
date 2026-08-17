@@ -1,5 +1,7 @@
 ---
 description: Attempt a narrow fix for a failed Azure SDK pull-request pipeline.
+imports:
+  - shared/api-usage.md
 on:
   workflow_dispatch:
     inputs:
@@ -47,10 +49,10 @@ on:
             comment.user?.login === "github-actions[bot]" &&
             comment.body?.includes(runUrl) &&
             comment.body.includes("[Pilot] PR Pipeline Failure Analysis") &&
-            comment.body.includes("**Automated fix:** in progress")
+            comment.body.includes("<!-- pipeline-auto-fix-authorized -->")
           );
           if (matches.length !== 1) {
-            core.setFailed(`Expected one in-progress analysis comment, found ${matches.length}.`);
+            core.setFailed(`Expected one authorized analysis comment, found ${matches.length}.`);
             return;
           }
           core.setOutput("body", matches[0].body);
@@ -69,9 +71,17 @@ on:
           });
           if (pull.state !== "open" || pull.head.sha !== process.env.CI_HEAD_SHA) {
             core.setFailed("The pull request is closed or no longer points to the failed commit.");
+            return;
+          }
+          if (pull.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+            core.setFailed("Automated fixing is not supported for fork-owned pull request branches.");
           }
 if: needs.pre_activation.outputs.analysis_comment_result == 'success' && needs.pre_activation.outputs.pr_head_result == 'success'
 engine: copilot
+
+concurrency:
+  group: "pipeline-analysis-auto-fix-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}"
+  cancel-in-progress: false
 
 jobs:
   pre-activation:
@@ -210,14 +220,21 @@ safe-outputs:
                 comment.user?.login === "github-actions[bot]" &&
                 comment.body?.includes(runUrl) &&
                 comment.body.includes("[Pilot] PR Pipeline Failure Analysis") &&
-                comment.body.includes("**Automated fix:** in progress")
+                comment.body.includes("<!-- pipeline-auto-fix-authorized -->")
               );
               if (matches.length !== 1) {
-                core.setFailed(`Expected one in-progress analysis comment, found ${matches.length}.`);
+                core.setFailed(`Expected one authorized analysis comment, found ${matches.length}.`);
+                return;
+              }
+              const requestedStatus =
+                `**Automated fix:** [requested from this analysis run](${runUrl})\n\n` +
+                "<!-- pipeline-auto-fix-authorized -->";
+              if (!matches[0].body.includes(requestedStatus)) {
+                core.setFailed("The authorized analysis comment has an unexpected automated-fix status.");
                 return;
               }
               const body = matches[0].body.replace(
-                "**Automated fix:** in progress",
+                requestedStatus,
                 `Copilot opened a [draft fix](${fixPrUrl}) and triggered its checks. ` +
                   "Review the changes and check results, then merge it if it resolves the failure."
               );
@@ -240,7 +257,12 @@ ${{ needs.pre_activation.outputs.analysis_comment }}
 ## Process
 
 1. Use `noop` unless the verified analysis demonstrates at least one deterministic, high-confidence code change. Infrastructure, authentication, timeout, flaky, live-test, ambiguous, incomplete, and out-of-scope failures are not eligible.
-2. Make the smallest source or test change that fixes the demonstrated failure. Do not modify workflow, pipeline, repository automation, or dependency files.
+2. Make the smallest source or test change that fixes the demonstrated failure. Use the `edit`
+  tool for file-content changes. If the fix requires deleting a tracked file, run
+  `git rm <path>` as one standalone shell command; do not combine it with other commands. Leave the
+  resulting workspace changes uncommitted: do not create or switch branches, configure Git, commit,
+  or push. The `create_pull_request` safe output creates the branch and commit from the workspace
+  diff. Do not modify workflow, pipeline, repository automation, or dependency files.
 3. If changes were made, call `create_pull_request` exactly once. Use the title
   `Fix pipeline failure for #${{ github.event.inputs.pr_number }}`. In the body, identify the source pull request and failed commit, then summarize the diagnosis, change, and validation.
 4. Do not poll pull request checks or claim that the fix passed validation. State that validation is pending the automated checks triggered by the draft pull request.
