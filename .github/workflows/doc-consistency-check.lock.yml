@@ -54,7 +54,7 @@
 name: "Documentation Consistency Check"
 on:
   schedule:
-  - cron: "39 4 * * 1"
+  - cron: "7 13 * * 1"
     # Friendly format: weekly on Monday (scattered)
   workflow_dispatch:
     inputs:
