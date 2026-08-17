@@ -27,9 +27,13 @@ post-steps:
           : "n/a (window reset)";
         await core.summary
           .addDetails("GitHub API Usage", [
+            "",
+            "",
             "| Consumed | Remaining before | Remaining after | Limit | Reset |",
             "| ---: | ---: | ---: | ---: | --- |",
             `| ${consumed} | ${process.env.GH_API_REMAINING_BEFORE ?? "n/a"} | ${rate.remaining} | ${rate.limit} | ${new Date(rate.reset * 1000).toISOString()} |`,
+            "",
+            "",
           ].join("\n"))
           .write();
 ---
