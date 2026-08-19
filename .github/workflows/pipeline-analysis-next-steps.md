@@ -32,7 +32,12 @@ on:
             core.info("Skipping analysis because no Azure Pipelines suites failed.");
             return;
           }
-          const prNumbers = [...new Set(suite.pull_requests.map(pull => pull.number))];
+          const repositoryName = `${context.repo.owner}/${context.repo.repo}`.toLowerCase();
+          const prNumbers = [...new Set(
+            suite.pull_requests
+              .filter(candidate => candidate.base?.repo?.full_name?.toLowerCase() === repositoryName)
+              .map(candidate => candidate.number)
+          )];
           const pulls = await Promise.all(prNumbers.map(async pullNumber => {
             const { data: pull } = await github.rest.pulls.get({
               ...context.repo,
@@ -45,7 +50,7 @@ on:
           );
           if (matchingPulls.length !== 1) {
             core.info(
-              `Skipping analysis because ${matchingPulls.length} open pull requests point to ${suite.head_sha}; expected exactly one.`
+              `Skipping analysis because ${matchingPulls.length} open pull requests in ${repositoryName} point to ${suite.head_sha}; expected exactly one.`
             );
             return;
           }
@@ -134,7 +139,6 @@ safe-outputs:
     report-as-issue: false
   add-comment:
     max: 1
-    target: ${{ needs.pre_activation.outputs.pr_number }}
     hide-older-comments: true
   dispatch-workflow:
     workflows:
