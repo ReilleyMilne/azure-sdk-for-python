@@ -1,0 +1,46 @@
+# Fork-only Azure Pipelines fixture for the pipeline-analysis E2E demo.
+#
+# A PR fails while sdk/core/azure-core/ci-fail-marker.txt exists. The generated fix can safely
+# delete that file because production auto-fixes are restricted to sdk/**. Verify stays green so
+# validation also proves the fix did not regress an already-passing pipeline stage.
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - '*'
+  drafts: true
+
+pool:
+  name: Default
+
+stages:
+  - stage: Analyze
+    displayName: Analyze
+    jobs:
+      - job: Analyze
+        displayName: Analyze
+        steps:
+          - checkout: self
+          - bash: |
+              set -euo pipefail
+              marker="$(Build.SourcesDirectory)/sdk/core/azure-core/ci-fail-marker.txt"
+              if [ -f "$marker" ]; then
+                echo "##vso[task.logissue type=error]Analyze failed: sdk/core/azure-core/ci-fail-marker.txt is present."
+                echo "Delete sdk/core/azure-core/ci-fail-marker.txt to fix this simulated failure."
+                cat "$marker"
+                exit 1
+              fi
+              echo "Analyze passed: the failure marker is absent."
+            displayName: Check for failure marker
+
+  - stage: Verify
+    displayName: Verify
+    jobs:
+      - job: Verify
+        displayName: Verify
+        steps:
+          - checkout: self
+          - bash: echo "Verify passed."
+            displayName: Always succeeds
