@@ -1,0 +1,1 @@
+Intentional failure marker for the pipeline auto-fix retargeting E2E test.
