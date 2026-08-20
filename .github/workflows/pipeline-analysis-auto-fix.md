@@ -11,6 +11,10 @@ on:
         description: Failed pull request commit
         required: true
         type: string
+      source_branch:
+        description: Failed pull request branch
+        required: true
+        type: string
       parent_run_id:
         description: Trigger run that requested this fix
         required: true
@@ -62,21 +66,25 @@ on:
       env:
         CI_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
         PR_NUMBER: ${{ github.event.inputs.pr_number }}
+        SOURCE_BRANCH: ${{ github.event.inputs.source_branch }}
       with:
         script: |
           const { data: pull } = await github.rest.pulls.get({
             ...context.repo,
             pull_number: Number(process.env.PR_NUMBER),
           });
-          if (pull.state !== "open" || pull.head.sha !== process.env.CI_HEAD_SHA) {
-            core.setFailed("The pull request is closed or no longer points to the failed commit.");
+          if (
+            pull.state !== "open" ||
+            pull.head.sha !== process.env.CI_HEAD_SHA ||
+            pull.head.ref !== process.env.SOURCE_BRANCH
+          ) {
+            core.setFailed("The pull request is closed or no longer points to the failed branch and commit.");
             return;
           }
           if (pull.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
             core.setFailed("Automated fixing is not supported for fork-owned pull request branches.");
             return;
           }
-          core.setOutput("source_branch", pull.head.ref);
 if: needs.pre_activation.outputs.analysis_comment_result == 'success' && needs.pre_activation.outputs.pr_head_result == 'success'
 engine: copilot
 
@@ -89,26 +97,6 @@ jobs:
     outputs:
       analysis_comment: ${{ steps.analysis_comment.outputs.body }}
       analysis_comment_id: ${{ steps.analysis_comment.outputs.comment_id }}
-      source_branch: ${{ steps.pr_head.outputs.source_branch }}
-  source_context:
-    runs-on: ubuntu-latest
-    needs: pre_activation
-    outputs:
-      source_branch: ${{ steps.source_branch.outputs.value }}
-    steps:
-      - name: Forward source branch
-        id: source_branch
-        uses: actions/github-script@v9.0.0
-        env:
-          SOURCE_BRANCH: ${{ needs.pre_activation.outputs.source_branch }}
-        with:
-          script: |
-            if (!process.env.SOURCE_BRANCH) {
-              core.setFailed("The source branch was not forwarded from pre-activation.");
-              return;
-            }
-            core.info(`Forwarding source branch: ${process.env.SOURCE_BRANCH}`);
-            core.setOutput("value", process.env.SOURCE_BRANCH);
   safe_outputs:
     permissions:
       pull-requests: read
@@ -118,14 +106,19 @@ jobs:
         env:
           CI_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          SOURCE_BRANCH: ${{ github.event.inputs.source_branch }}
         with:
           script: |
             const { data: pull } = await github.rest.pulls.get({
               ...context.repo,
               pull_number: Number(process.env.PR_NUMBER),
             });
-            if (pull.state !== "open" || pull.head.sha !== process.env.CI_HEAD_SHA) {
-              core.setFailed("The pull request is closed or no longer points to the failed commit.");
+            if (
+              pull.state !== "open" ||
+              pull.head.sha !== process.env.CI_HEAD_SHA ||
+              pull.head.ref !== process.env.SOURCE_BRANCH
+            ) {
+              core.setFailed("The pull request is closed or no longer points to the failed branch and commit.");
             }
 
 permissions:
@@ -152,7 +145,6 @@ tools:
     - "git status:*"
 
 safe-outputs:
-  needs: [source_context]
   noop:
     report-as-issue: false
   create-pull-request:
@@ -161,7 +153,7 @@ safe-outputs:
     max: 1
     signed-commits: false
     branch-prefix: "pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
-    base-branch: ${{ needs.source_context.outputs.source_branch }}
+    base-branch: ${{ github.event.inputs.source_branch }}
     protected-files: fallback-to-issue
     expires: 7
     if-no-changes: ignore
