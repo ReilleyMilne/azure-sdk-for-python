@@ -74,7 +74,9 @@ on:
           }
           if (pull.head.repo?.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
             core.setFailed("Automated fixing is not supported for fork-owned pull request branches.");
+            return;
           }
+          core.setOutput("source_branch", pull.head.ref);
 if: needs.pre_activation.outputs.analysis_comment_result == 'success' && needs.pre_activation.outputs.pr_head_result == 'success'
 engine: copilot
 
@@ -87,6 +89,26 @@ jobs:
     outputs:
       analysis_comment: ${{ steps.analysis_comment.outputs.body }}
       analysis_comment_id: ${{ steps.analysis_comment.outputs.comment_id }}
+      source_branch: ${{ steps.pr_head.outputs.source_branch }}
+  source_context:
+    runs-on: ubuntu-latest
+    needs: pre_activation
+    outputs:
+      source_branch: ${{ steps.source_branch.outputs.value }}
+    steps:
+      - name: Forward source branch
+        id: source_branch
+        uses: actions/github-script@v9.0.0
+        env:
+          SOURCE_BRANCH: ${{ needs.pre_activation.outputs.source_branch }}
+        with:
+          script: |
+            if (!process.env.SOURCE_BRANCH) {
+              core.setFailed("The source branch was not forwarded from pre-activation.");
+              return;
+            }
+            core.info(`Forwarding source branch: ${process.env.SOURCE_BRANCH}`);
+            core.setOutput("value", process.env.SOURCE_BRANCH);
   safe_outputs:
     permissions:
       pull-requests: read
@@ -130,6 +152,7 @@ tools:
     - "git status:*"
 
 safe-outputs:
+  needs: [source_context]
   noop:
     report-as-issue: false
   create-pull-request:
@@ -138,27 +161,28 @@ safe-outputs:
     max: 1
     signed-commits: false
     branch-prefix: "pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}/"
-    base-branch: ${{ github.event.repository.default_branch }}
+    base-branch: ${{ needs.source_context.outputs.source_branch }}
     protected-files: fallback-to-issue
     expires: 7
     if-no-changes: ignore
   jobs:
-    retarget-fix-pr:
-      description: Retarget the created fix pull request to the original pull request branch
+    trigger-main-checks:
+      description: Trigger default-branch checks by retargeting to main, then restore the original pull request branch as the base
       runs-on: ubuntu-latest
       needs: safe_outputs
       permissions:
         pull-requests: write
       inputs:
         requested:
-          description: Confirm that retargeting was requested
+          description: Confirm that default-branch checks were requested
           required: true
           type: boolean
       steps:
-        - name: Retarget fix pull request
+        - name: Trigger default-branch checks
           uses: actions/github-script@v9.0.0
           env:
             CI_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
+            DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
             FIX_PR_NUMBER: ${{ needs.safe_outputs.outputs.created_pr_number }}
             SOURCE_PR_NUMBER: ${{ github.event.inputs.pr_number }}
           with:
@@ -179,6 +203,13 @@ safe-outputs:
                 core.setFailed("The source pull request branch is not in this repository and cannot be used as a base.");
                 return;
               }
+              core.info(`Retargeting fix pull request to ${process.env.DEFAULT_BRANCH} to trigger checks.`);
+              await github.rest.pulls.update({
+                ...context.repo,
+                pull_number: Number(process.env.FIX_PR_NUMBER),
+                base: process.env.DEFAULT_BRANCH,
+              });
+              core.info(`Restoring fix pull request base to ${sourcePull.head.ref}.`);
               await github.rest.pulls.update({
                 ...context.repo,
                 pull_number: Number(process.env.FIX_PR_NUMBER),
@@ -187,7 +218,7 @@ safe-outputs:
     update-analysis-comment:
       description: Link the created fix pull request from the verified analysis comment
       runs-on: ubuntu-latest
-      needs: [safe_outputs, retarget-fix-pr]
+      needs: [safe_outputs, trigger-main-checks]
       permissions:
         issues: write
       inputs:
@@ -254,8 +285,7 @@ ${{ needs.pre_activation.outputs.analysis_comment }}
 ## Process
 
 1. Use `noop` unless the verified analysis demonstrates at least one deterministic, high-confidence code change. Infrastructure, authentication, timeout, flaky, live-test, ambiguous, incomplete, and out-of-scope failures are not eligible.
-2. Make the smallest source or test change that fixes the demonstrated failure. Use the `edit`
-  tool for file-content changes. If the fix requires deleting a tracked file, run
+2. Make the smallest source or test change that fixes the demonstrated failure. Ensure that when making edits to any files that you use the `edit`. You do not have permissions to edit files any other way. If the fix requires deleting a tracked file, run
   `git rm <path>` as one standalone shell command; do not combine it with other commands. Leave the
   resulting workspace changes uncommitted: do not create or switch branches, configure Git, commit,
   or push. The `create_pull_request` safe output creates the branch and commit from the workspace
@@ -263,8 +293,9 @@ ${{ needs.pre_activation.outputs.analysis_comment }}
 3. If changes were made, call `create_pull_request` exactly once. Use the title
   `Fix pipeline failure for #${{ github.event.inputs.pr_number }}`. In the body, identify the source pull request and failed commit, then summarize the diagnosis, change, and validation.
 4. Do not poll pull request checks or claim that the fix passed validation. State that validation is pending the automated checks triggered by the draft pull request.
-5. Call `retarget_fix_pr` exactly once with `requested: true`. It retargets the created draft
-  pull request to the original pull request branch.
+5. Call `trigger_main_checks` exactly once with `requested: true`. It briefly retargets the
+  created draft pull request to the default branch to trigger checks, then immediately restores the
+  original pull request branch as its base.
 6. Call `update_analysis_comment` exactly once with `requested: true`. It waits for retargeting
   to succeed, then links the draft pull request from the verified analysis comment and tells the
   author to review its changes and check results.
