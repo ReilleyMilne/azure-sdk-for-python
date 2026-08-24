@@ -1,0 +1,1 @@
+Intentional pipeline failure for branch-only auto-fix E2E validation.
