@@ -107,6 +107,7 @@ tools:
     - "tail"
     - "wc"
     - "git diff:*"
+    - "git rm:*"
     - "git status:*"
 
 safe-outputs:
