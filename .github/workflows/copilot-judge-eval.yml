@@ -1,0 +1,17 @@
+name: Copilot Judge Eval
+
+on:
+  pull_request:
+    paths:
+      - ".github/copilot-judge-eval/**"
+
+permissions:
+  contents: read
+
+jobs:
+  marker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require Copilot fix marker
+        run: test -f .github/copilot-judge-eval/fixed.txt
