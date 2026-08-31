@@ -1,0 +1,1 @@
+Intentional failure for presentation stage 2: automated fix requested.
