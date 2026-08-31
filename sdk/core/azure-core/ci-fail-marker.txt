@@ -1,0 +1,1 @@
+Intentional failure for clean presentation stage 4: adopted fix and green checks.
