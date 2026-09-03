@@ -233,19 +233,30 @@ jobs:
         uses: actions/github-script@v9.0.0
         with:
           script: |
+            const suite = context.payload.check_suite;
             const repositoryId = context.payload.repository.id;
             const prNumbers = [...new Set(
-              context.payload.check_suite.pull_requests
+              suite.pull_requests
                 .filter(candidate => candidate.base?.repo?.id === repositoryId)
                 .map(candidate => candidate.number)
             )];
-            if (prNumbers.length !== 1) {
+            const pulls = await Promise.all(prNumbers.map(async pullNumber => {
+              const { data: pull } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: pullNumber,
+              });
+              return pull;
+            }));
+            const matchingPulls = pulls.filter(
+              pull => pull.state === "open" && pull.head.sha === suite.head_sha
+            );
+            if (matchingPulls.length !== 1) {
               core.setFailed(
-                `Expected exactly one pull request in ${context.repo.owner}/${context.repo.repo} from the triggering check suite; found ${prNumbers.length}.`
+                `Expected exactly one open pull request in ${context.repo.owner}/${context.repo.repo} at ${suite.head_sha}; found ${matchingPulls.length}.`
               );
               return;
             }
-            core.setOutput("pr_number", String(prNumbers[0]));
+            core.setOutput("pr_number", String(matchingPulls[0].number));
 
 safe-outputs:
   report-failure-as-issue: false
@@ -298,11 +309,12 @@ safe-outputs:
   Use `noop`, not `missing_tool`, `missing_data`, or `report_incomplete`, for these paths.
   Retrieve pull request `${{ needs.pre_activation.outputs.pr_number }}`. If it is not open or its
   current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
-2. Inspect `.github/skills` for repository- or language-specific skills useful for analyzing the
-  failure, and read their `SKILL.md` files before diagnosing it.
-3. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
+2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
   `references/failure-patterns.md`, then follow their diagnosis guidance. The deterministic setup
   has already run the CLI analysis, so do not follow the skill's MCP invocation requirement.
+3. Inspect `.github/skills` for repository- or language-specific skills
+  useful for analyzing the
+  failure, and read their `SKILL.md` files before diagnosing it.
 4. Read `pipeline-analysis.json`, which contains the complete JSON output from `azsdk ci analyze`.
   If it contains `No failed Azure Pipeline builds found` or no real failures, call `noop` and stop.
 5. Read `pipeline-test-results.txt`, which contains full failed-test details for every unique

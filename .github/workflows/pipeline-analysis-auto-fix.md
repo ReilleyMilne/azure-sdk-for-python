@@ -29,7 +29,6 @@ on:
         PR_NUMBER: ${{ github.event.inputs.pr_number }}
       with:
         script: |
-          core.setOutput("run_fix", "false");
           if (!/^\d+$/.test(process.env.PR_NUMBER)) {
             core.info("Skipping fix because the PR number is invalid.");
             return;
@@ -79,8 +78,7 @@ on:
             return;
           }
           core.setOutput("body", matches[0].body);
-          core.setOutput("run_fix", "true");
-if: needs.pre_activation.outputs.run_fix == 'true'
+if: needs.pre_activation.outputs.fix_request_result == 'success'
 engine: copilot
 
 concurrency:
@@ -91,7 +89,6 @@ jobs:
   pre-activation:
     outputs:
       analysis_comment: ${{ steps.fix_request.outputs.body }}
-      run_fix: ${{ steps.fix_request.outputs.run_fix }}
 
 permissions:
   contents: read
