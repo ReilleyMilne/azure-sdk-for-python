@@ -114,6 +114,9 @@ pre-agent-steps:
       Add-Content -Path $env:GITHUB_PATH -Value $installDirectory
   - name: Analyze failing pipeline
     uses: actions/github-script@v9.0.0
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
     with:
       script: |
         const fs = require("fs");
@@ -175,7 +178,7 @@ pre-agent-steps:
           return;
         }
 
-        const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${matchingPulls[0].number}`;
+        const prUrl = `https://github.com/${process.env.REPOSITORY}/pull/${matchingPulls[0].number}`;
         const analysisFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-analysis.json");
         const testResultsFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-test-results.txt");
         const analysis = await runAzsdk(["ci", "analyze", prUrl, "--output", "json"]);
