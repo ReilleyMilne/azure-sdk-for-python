@@ -114,9 +114,6 @@ pre-agent-steps:
       Add-Content -Path $env:GITHUB_PATH -Value $installDirectory
   - name: Analyze failing pipeline
     uses: actions/github-script@v9.0.0
-    env:
-      HEAD_SHA: ${{ needs.pre_activation.outputs.head_sha }}
-      PR_NUMBER: ${{ needs.pre_activation.outputs.pr_number }}
     with:
       script: |
         const fs = require("fs");
@@ -154,18 +151,31 @@ pre-agent-steps:
           };
         };
 
-        const { data: pull } = await github.rest.pulls.get({
-          ...context.repo,
-          pull_number: Number(process.env.PR_NUMBER),
-        });
-        if (pull.state !== "open" || pull.head.sha !== process.env.HEAD_SHA) {
+        const suite = context.payload.check_suite;
+        const repositoryId = context.payload.repository.id;
+        const prNumbers = [...new Set(
+          suite.pull_requests
+            .filter(candidate => candidate.base?.repo?.id === repositoryId)
+            .map(candidate => candidate.number)
+        )];
+        const pulls = await Promise.all(prNumbers.map(async pullNumber => {
+          const { data: pull } = await github.rest.pulls.get({
+            ...context.repo,
+            pull_number: pullNumber,
+          });
+          return pull;
+        }));
+        const matchingPulls = pulls.filter(
+          pull => pull.state === "open" && pull.head.sha === suite.head_sha
+        );
+        if (matchingPulls.length !== 1) {
           core.setFailed(
-            `Pull request ${process.env.PR_NUMBER} is not open at ${process.env.HEAD_SHA}.`
+            `Expected exactly one open pull request in ${context.repo.owner}/${context.repo.repo} at ${suite.head_sha}; found ${matchingPulls.length}.`
           );
           return;
         }
 
-        const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${process.env.PR_NUMBER}`;
+        const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${matchingPulls[0].number}`;
         const analysisFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-analysis.json");
         const testResultsFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-test-results.txt");
         const analysis = await runAzsdk(["ci", "analyze", prUrl, "--output", "json"]);
