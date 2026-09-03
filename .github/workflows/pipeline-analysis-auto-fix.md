@@ -159,13 +159,13 @@ safe-outputs:
             echo "publish_fix=false" >> "$GITHUB_OUTPUT"
             mapfile -d '' patches < <(find "$RUNNER_TEMP/gh-aw/safe-jobs" -maxdepth 1 -type f -name 'aw-*.patch' -print0)
             if [[ ${#patches[@]} -ne 1 ]]; then
-              echo "::notice::Skipping publish because exactly one staged fix patch was expected; found ${#patches[@]}."
-              exit 0
+              echo "Expected exactly one staged fix patch, found ${#patches[@]}." >&2
+              exit 1
             fi
             patch_size=$(wc -c < "${patches[0]}")
             if (( patch_size > 4096 * 1024 )); then
-              echo "::notice::Skipping publish because the fix patch exceeds the 4096 KiB size limit."
-              exit 0
+              echo "The fix patch exceeds the 4096 KiB size limit." >&2
+              exit 1
             fi
 
             git checkout -b "$FIX_BRANCH" "$CI_HEAD_SHA"
@@ -176,8 +176,8 @@ safe-outputs:
               exit 0
             fi
             if (( ${#changed_files[@]} > 100 )); then
-              echo "::notice::Skipping publish because the fix patch exceeds the 100-file limit."
-              exit 0
+              echo "The fix patch exceeds the 100-file limit." >&2
+              exit 1
             fi
             declare -A protected_files=(
               [AGENTS.md]=1
