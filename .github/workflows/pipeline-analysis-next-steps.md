@@ -259,6 +259,7 @@ jobs:
             core.setOutput("pr_number", String(matchingPulls[0].number));
 
 safe-outputs:
+  report-failed-jobs: false
   report-failure-as-issue: false
   report-incomplete: false
   missing-tool: false

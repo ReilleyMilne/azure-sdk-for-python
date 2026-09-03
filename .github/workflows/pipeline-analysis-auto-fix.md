@@ -120,6 +120,7 @@ tools:
     - "git status:*"
 
 safe-outputs:
+  report-failed-jobs: false
   report-failure-as-issue: false
   report-incomplete: false
   # v0.80.9 requires one concrete safe-output handler to materialize the
