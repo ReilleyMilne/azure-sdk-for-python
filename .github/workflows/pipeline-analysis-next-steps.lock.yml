@@ -1,5 +1,5 @@
-# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"a8393d5c05953d5e68d60a386eddb27e31d0bf8cd3fbfc8aa9b86da1c6bc0f07","body_hash":"159571a482943e6c7f70a6c526c5c6a1f00ecdb0f93c6761273b26606734c1da","compiler_version":"v0.80.9","strict":true,"agent_id":"copilot","engine_versions":{"copilot":"1.0.63"}}
-# gh-aw-manifest: {"version":1,"secrets":["GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN"],"actions":[{"repo":"actions/cache/restore","sha":"27d5ce7f107fe9357f9df03efb73ab90386fccae","version":"v5.0.5"},{"repo":"actions/cache/save","sha":"27d5ce7f107fe9357f9df03efb73ab90386fccae","version":"v5.0.5"},{"repo":"actions/checkout","sha":"9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0","version":"v7.0.0"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e","version":"v6.4.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"8c7d04ebf1ece56cd381446125da3e0f6896294a","version":"v0.80.9"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.27.7","digest":"sha256:aae231e4635c8999d039c132f1602d3df850fe9b84a00aa2b5ac981179b5661c","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.27.7@sha256:aae231e4635c8999d039c132f1602d3df850fe9b84a00aa2b5ac981179b5661c"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.7","digest":"sha256:009caf2e3d88fa77b64e9a03a95a228fc58db0f1701c6d324b29ba5a3c7c79b6","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.7@sha256:009caf2e3d88fa77b64e9a03a95a228fc58db0f1701c6d324b29ba5a3c7c79b6"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.27.7","digest":"sha256:deb1d4e19de62d51cee0508057a596a19315c3423ada4d675cad136dc8037c96","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.27.7@sha256:deb1d4e19de62d51cee0508057a596a19315c3423ada4d675cad136dc8037c96"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.3.27","digest":"sha256:fe984bddde4ec05d756d9043edb0a32912e6b7b72f6a121b1082f29221421cc7","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.3.27@sha256:fe984bddde4ec05d756d9043edb0a32912e6b7b72f6a121b1082f29221421cc7"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:529d02eb970b1161aa25c593a9c3df57fdfad5a8add328cb3b6eccef66f3183b","pinned_image":"ghcr.io/github/gh-aw-node@sha256:529d02eb970b1161aa25c593a9c3df57fdfad5a8add328cb3b6eccef66f3183b"},{"image":"ghcr.io/github/github-mcp-server:v1.4.0","digest":"sha256:2afb26356481d1a350e14544a6e160f7f7ec1561a1ea309b823665abf0309036","pinned_image":"ghcr.io/github/github-mcp-server:v1.4.0@sha256:2afb26356481d1a350e14544a6e160f7f7ec1561a1ea309b823665abf0309036"}]}
+# gh-aw-metadata: {"schema_version":"v4","frontmatter_hash":"c01132690cdb65eaa80b21db7ddb71673d5e685c0b28c0cf684a73d4414600f9","body_hash":"6a884cb939e40bbc6947cbee5c4ca750de510b92ff9f2a2e7700ae2e80e3cde8","compiler_version":"v0.80.9","strict":true,"agent_id":"copilot","engine_versions":{"copilot":"1.0.63"}}
+# gh-aw-manifest: {"version":1,"secrets":["GH_AW_GITHUB_MCP_SERVER_TOKEN","GH_AW_GITHUB_TOKEN","GITHUB_TOKEN"],"actions":[{"repo":"actions/cache/restore","sha":"27d5ce7f107fe9357f9df03efb73ab90386fccae","version":"v5.0.5"},{"repo":"actions/cache/save","sha":"27d5ce7f107fe9357f9df03efb73ab90386fccae","version":"v5.0.5"},{"repo":"actions/checkout","sha":"3d3c42e5aac5ba805825da76410c181273ba90b1","version":"v7.0.1"},{"repo":"actions/checkout","sha":"9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0","version":"v7.0.0"},{"repo":"actions/download-artifact","sha":"3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c","version":"v8.0.1"},{"repo":"actions/github-script","sha":"3a2844b7e9c422d3c10d287c895573f7108da1b3","version":"v9.0.0"},{"repo":"actions/setup-node","sha":"48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e","version":"v6.4.0"},{"repo":"actions/upload-artifact","sha":"043fb46d1a93c77aae656e7c1c64a875d1fc6a0a","version":"v7.0.1"},{"repo":"github/gh-aw-actions/setup","sha":"8c7d04ebf1ece56cd381446125da3e0f6896294a","version":"v0.80.9"}],"containers":[{"image":"ghcr.io/github/gh-aw-firewall/agent:0.27.7","digest":"sha256:aae231e4635c8999d039c132f1602d3df850fe9b84a00aa2b5ac981179b5661c","pinned_image":"ghcr.io/github/gh-aw-firewall/agent:0.27.7@sha256:aae231e4635c8999d039c132f1602d3df850fe9b84a00aa2b5ac981179b5661c"},{"image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.7","digest":"sha256:009caf2e3d88fa77b64e9a03a95a228fc58db0f1701c6d324b29ba5a3c7c79b6","pinned_image":"ghcr.io/github/gh-aw-firewall/api-proxy:0.27.7@sha256:009caf2e3d88fa77b64e9a03a95a228fc58db0f1701c6d324b29ba5a3c7c79b6"},{"image":"ghcr.io/github/gh-aw-firewall/squid:0.27.7","digest":"sha256:deb1d4e19de62d51cee0508057a596a19315c3423ada4d675cad136dc8037c96","pinned_image":"ghcr.io/github/gh-aw-firewall/squid:0.27.7@sha256:deb1d4e19de62d51cee0508057a596a19315c3423ada4d675cad136dc8037c96"},{"image":"ghcr.io/github/gh-aw-mcpg:v0.3.27","digest":"sha256:fe984bddde4ec05d756d9043edb0a32912e6b7b72f6a121b1082f29221421cc7","pinned_image":"ghcr.io/github/gh-aw-mcpg:v0.3.27@sha256:fe984bddde4ec05d756d9043edb0a32912e6b7b72f6a121b1082f29221421cc7"},{"image":"ghcr.io/github/gh-aw-node","digest":"sha256:529d02eb970b1161aa25c593a9c3df57fdfad5a8add328cb3b6eccef66f3183b","pinned_image":"ghcr.io/github/gh-aw-node@sha256:529d02eb970b1161aa25c593a9c3df57fdfad5a8add328cb3b6eccef66f3183b"},{"image":"ghcr.io/github/github-mcp-server:v1.4.0","digest":"sha256:2afb26356481d1a350e14544a6e160f7f7ec1561a1ea309b823665abf0309036","pinned_image":"ghcr.io/github/github-mcp-server:v1.4.0@sha256:2afb26356481d1a350e14544a6e160f7f7ec1561a1ea309b823665abf0309036"}]}
 # This file was automatically generated by gh-aw (v0.80.9). DO NOT EDIT. To debug this workflow, load the skill at https://github.com/github/gh-aw/blob/main/debug.md
 #
 #    ___                   _   _      
@@ -33,6 +33,7 @@
 # Custom actions used:
 #   - actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
 #   - actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+#   - actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 #   - actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 #   - actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
 #   - actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -89,13 +90,21 @@ on:
             # .filter(candidate => candidate.base?.repo?.id === repositoryId)
             # .map(candidate => candidate.number)
         # )];
-        # const pulls = await Promise.all(prNumbers.map(async pullNumber => {
-          # const { data: pull } = await github.rest.pulls.get({
-            # ...context.repo,
-            # pull_number: pullNumber,
-          # });
-          # return pull;
-        # }));
+        # const pulls = (await Promise.all(prNumbers.map(async pullNumber => {
+          # try {
+            # const { data: pull } = await github.rest.pulls.get({
+              # ...context.repo,
+              # pull_number: pullNumber,
+            # });
+            # return pull;
+          # } catch (error) {
+            # if (error.status === 404) {
+              # core.info(`Ignoring pull request ${pullNumber} because it no longer exists.`);
+              # return null;
+            # }
+            # throw error;
+          # }
+        # }))).filter(Boolean);
         # const matchingPulls = pulls.filter(
           # pull => pull.state === "open" && pull.head.sha === suite.head_sha
         # );
@@ -237,7 +246,7 @@ jobs:
             const { main } = require('${{ runner.temp }}/gh-aw/actions/check_daily_aic_workflow_guardrail.cjs');
             await main();
       - name: Checkout .github and .agents folders
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: |
@@ -298,20 +307,20 @@ jobs:
         run: |
           bash "${RUNNER_TEMP}/gh-aw/actions/create_prompt_first.sh"
           {
-          cat << 'GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF'
+          cat << 'GH_AW_PROMPT_9103199f68dfbba9_EOF'
           <system>
-          GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF
+          GH_AW_PROMPT_9103199f68dfbba9_EOF
           cat "${RUNNER_TEMP}/gh-aw/prompts/xpia.md"
           cat "${RUNNER_TEMP}/gh-aw/prompts/temp_folder_prompt.md"
           cat "${RUNNER_TEMP}/gh-aw/prompts/markdown.md"
           cat "${RUNNER_TEMP}/gh-aw/prompts/safe_outputs_prompt.md"
-          cat << 'GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF'
+          cat << 'GH_AW_PROMPT_9103199f68dfbba9_EOF'
           <safe-output-tools>
-          Tools: add_comment, dispatch_workflow, missing_tool, missing_data, noop, publish_analysis
+          Tools: add_comment, dispatch_workflow, noop, publish_analysis
           </safe-output-tools>
-          GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF
+          GH_AW_PROMPT_9103199f68dfbba9_EOF
           cat "${RUNNER_TEMP}/gh-aw/prompts/mcp_cli_tools_prompt.md"
-          cat << 'GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF'
+          cat << 'GH_AW_PROMPT_9103199f68dfbba9_EOF'
           <github-context>
           The following GitHub context information is available for this workflow:
           {{#if github.actor}}
@@ -353,12 +362,12 @@ jobs:
               stop immediately and report the limitation rather than spending turns trying to work around it.
           </github-context>
           
-          GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF
+          GH_AW_PROMPT_9103199f68dfbba9_EOF
           cat "${RUNNER_TEMP}/gh-aw/prompts/github_mcp_tools_with_safeoutputs_prompt.md"
-          cat << 'GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF'
+          cat << 'GH_AW_PROMPT_9103199f68dfbba9_EOF'
           </system>
           {{#runtime-import .github/workflows/pipeline-analysis-next-steps.md}}
-          GH_AW_PROMPT_ef3e6e9e93eb34bf_EOF
+          GH_AW_PROMPT_9103199f68dfbba9_EOF
           } > "$GH_AW_PROMPT"
       - name: Interpolate variables and render templates
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -504,7 +513,7 @@ jobs:
             echo "GH_AW_SAFE_OUTPUTS_TOOLS_PATH=${RUNNER_TEMP}/gh-aw/safeoutputs/tools.json"
           } >> "$GITHUB_OUTPUT"
       - name: Checkout repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           filter: 'blob:limit=1073741824'
@@ -598,9 +607,9 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/gh-aw/safeoutputs"
           mkdir -p /tmp/gh-aw/safeoutputs
           mkdir -p /tmp/gh-aw/mcp-logs/safeoutputs
-          cat > "${RUNNER_TEMP}/gh-aw/safeoutputs/config.json" << 'GH_AW_SAFE_OUTPUTS_CONFIG_04f3370a2e27b79e_EOF'
-          {"add_comment":{"hide_older_comments":true,"max":1,"target":"${{ steps.comment_target.outputs.pr_number }}"},"create_report_incomplete_issue":{},"dispatch_workflow":{"aw_context_workflows":["pipeline-analysis-auto-fix"],"max":1,"workflow_files":{"pipeline-analysis-auto-fix":".lock.yml"},"workflows":["pipeline-analysis-auto-fix"]},"missing_data":{},"missing_tool":{},"noop":{"max":1,"report-as-issue":"false"},"publish-analysis":{"description":"Publish the pipeline analysis and its fixability classification","inputs":{"analysis":{"default":null,"description":"","required":true,"type":"string"},"fixability":{"default":null,"description":"","options":["fixable","non-fixable"],"required":true,"type":"choice"}}},"report_incomplete":{}}
-          GH_AW_SAFE_OUTPUTS_CONFIG_04f3370a2e27b79e_EOF
+          cat > "${RUNNER_TEMP}/gh-aw/safeoutputs/config.json" << 'GH_AW_SAFE_OUTPUTS_CONFIG_f0cedb9d21ed6189_EOF'
+          {"add_comment":{"hide_older_comments":true,"max":1,"target":"${{ steps.comment_target.outputs.pr_number }}"},"dispatch_workflow":{"aw_context_workflows":["pipeline-analysis-auto-fix"],"max":1,"workflow_files":{"pipeline-analysis-auto-fix":".lock.yml"},"workflows":["pipeline-analysis-auto-fix"]},"noop":{"max":1,"report-as-issue":"false"},"publish-analysis":{"description":"Publish the pipeline analysis and its fixability classification","inputs":{"analysis":{"default":null,"description":"","required":true,"type":"string"},"fixability":{"default":null,"description":"","options":["fixable","non-fixable"],"required":true,"type":"choice"}}}}
+          GH_AW_SAFE_OUTPUTS_CONFIG_f0cedb9d21ed6189_EOF
       - name: Generate Safe Outputs Tools
         env:
           GH_AW_TOOLS_META_JSON: |
@@ -710,52 +719,6 @@ jobs:
                   }
                 }
               },
-              "missing_data": {
-                "defaultMax": 20,
-                "fields": {
-                  "alternatives": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 256
-                  },
-                  "context": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 256
-                  },
-                  "data_type": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 128
-                  },
-                  "reason": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 256
-                  }
-                }
-              },
-              "missing_tool": {
-                "defaultMax": 20,
-                "fields": {
-                  "alternatives": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 512
-                  },
-                  "reason": {
-                    "required": true,
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 256
-                  },
-                  "tool": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 128
-                  }
-                }
-              },
               "noop": {
                 "defaultMax": 1,
                 "fields": {
@@ -764,22 +727,6 @@ jobs:
                     "type": "string",
                     "sanitize": true,
                     "maxLength": 65000
-                  }
-                }
-              },
-              "report_incomplete": {
-                "defaultMax": 5,
-                "fields": {
-                  "details": {
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 65000
-                  },
-                  "reason": {
-                    "required": true,
-                    "type": "string",
-                    "sanitize": true,
-                    "maxLength": 1024
                   }
                 }
               }
@@ -1179,10 +1126,7 @@ jobs:
       cancel-in-progress: false
       queue: max
     outputs:
-      incomplete_count: ${{ steps.report_incomplete.outputs.incomplete_count }}
       noop_message: ${{ steps.noop.outputs.noop_message }}
-      tools_reported: ${{ steps.missing_tool.outputs.tools_reported }}
-      total_count: ${{ steps.missing_tool.outputs.total_count }}
     steps:
       - name: Setup Scripts
         id: setup
@@ -1331,36 +1275,6 @@ jobs:
             setupGlobals(core, github, context, exec, io, getOctokit);
             const { main } = require('${{ runner.temp }}/gh-aw/actions/handle_detection_runs.cjs');
             await main();
-      - name: Record missing tool
-        id: missing_tool
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
-          GH_AW_MISSING_TOOL_CREATE_ISSUE: "true"
-          GH_AW_WORKFLOW_NAME: "Pipeline Analysis Next Steps"
-          GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/pipeline-analysis-next-steps.md"
-        with:
-          github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const { setupGlobals } = require('${{ runner.temp }}/gh-aw/actions/setup_globals.cjs');
-            setupGlobals(core, github, context, exec, io, getOctokit);
-            const { main } = require('${{ runner.temp }}/gh-aw/actions/missing_tool.cjs');
-            await main();
-      - name: Record incomplete
-        id: report_incomplete
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          GH_AW_AGENT_OUTPUT: ${{ steps.setup-agent-output-env.outputs.GH_AW_AGENT_OUTPUT }}
-          GH_AW_REPORT_INCOMPLETE_CREATE_ISSUE: "true"
-          GH_AW_WORKFLOW_NAME: "Pipeline Analysis Next Steps"
-          GH_AW_WORKFLOW_SOURCE_URL: "${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}/.github/workflows/pipeline-analysis-next-steps.md"
-        with:
-          github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const { setupGlobals } = require('${{ runner.temp }}/gh-aw/actions/setup_globals.cjs');
-            setupGlobals(core, github, context, exec, io, getOctokit);
-            const { main } = require('${{ runner.temp }}/gh-aw/actions/report_incomplete_handler.cjs');
-            await main();
       - name: Handle agent failure
         id: handle_agent_failure
         if: always()
@@ -1392,7 +1306,7 @@ jobs:
           GH_AW_DAILY_AI_CREDITS_TOTAL_EFFECTIVE_TOKENS: ${{ needs.activation.outputs.daily_ai_credits_total_effective_tokens }}
           GH_AW_DAILY_AI_CREDITS_THRESHOLD: ${{ needs.activation.outputs.daily_ai_credits_threshold }}
           GH_AW_GROUP_REPORTS: "false"
-          GH_AW_FAILURE_REPORT_AS_ISSUE: "true"
+          GH_AW_FAILURE_REPORT_AS_ISSUE: "false"
           GH_AW_MISSING_TOOL_REPORT_AS_FAILURE: "true"
           GH_AW_MISSING_DATA_REPORT_AS_FAILURE: "true"
           GH_AW_TIMEOUT_MINUTES: "20"
@@ -1721,13 +1635,21 @@ jobs:
                 .filter(candidate => candidate.base?.repo?.id === repositoryId)
                 .map(candidate => candidate.number)
             )];
-            const pulls = await Promise.all(prNumbers.map(async pullNumber => {
-              const { data: pull } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: pullNumber,
-              });
-              return pull;
-            }));
+            const pulls = (await Promise.all(prNumbers.map(async pullNumber => {
+              try {
+                const { data: pull } = await github.rest.pulls.get({
+                  ...context.repo,
+                  pull_number: pullNumber,
+                });
+                return pull;
+              } catch (error) {
+                if (error.status === 404) {
+                  core.info(`Ignoring pull request ${pullNumber} because it no longer exists.`);
+                  return null;
+                }
+                throw error;
+              }
+            }))).filter(Boolean);
             const matchingPulls = pulls.filter(
               pull => pull.state === "open" && pull.head.sha === suite.head_sha
             );
@@ -1836,30 +1758,19 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const suite = context.payload.check_suite;
             const repositoryId = context.payload.repository.id;
             const prNumbers = [...new Set(
-              suite.pull_requests
+              context.payload.check_suite.pull_requests
                 .filter(candidate => candidate.base?.repo?.id === repositoryId)
                 .map(candidate => candidate.number)
             )];
-            const pulls = await Promise.all(prNumbers.map(async pullNumber => {
-              const { data: pull } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: pullNumber,
-              });
-              return pull;
-            }));
-            const matchingPulls = pulls.filter(
-              pull => pull.state === "open" && pull.head.sha === suite.head_sha
-            );
-            if (matchingPulls.length !== 1) {
+            if (prNumbers.length !== 1) {
               core.setFailed(
-                `Expected exactly one open pull request in ${context.repo.owner}/${context.repo.repo} at ${suite.head_sha}; found ${matchingPulls.length}.`
+                `Expected exactly one pull request in ${context.repo.owner}/${context.repo.repo} from the triggering check suite; found ${prNumbers.length}.`
               );
               return;
             }
-            core.setOutput("pr_number", String(matchingPulls[0].number));
+            core.setOutput("pr_number", String(prNumbers[0]));
       - name: Download agent output artifact
         id: download-agent-output
         continue-on-error: true
@@ -1893,7 +1804,7 @@ jobs:
           GITHUB_SERVER_URL: ${{ github.server_url }}
           GITHUB_API_URL: ${{ github.api_url }}
           GH_AW_SAFE_OUTPUT_JOBS: "{\"publish_analysis\":\"\"}"
-          GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG: "{\"add_comment\":{\"hide_older_comments\":true,\"max\":1,\"target\":\"${{ steps.comment_target.outputs.pr_number }}\"},\"create_report_incomplete_issue\":{},\"dispatch_workflow\":{\"aw_context_workflows\":[\"pipeline-analysis-auto-fix\"],\"max\":1,\"workflow_files\":{\"pipeline-analysis-auto-fix\":\".lock.yml\"},\"workflows\":[\"pipeline-analysis-auto-fix\"]},\"missing_data\":{},\"missing_tool\":{},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"},\"report_incomplete\":{}}"
+          GH_AW_SAFE_OUTPUTS_HANDLER_CONFIG: "{\"add_comment\":{\"hide_older_comments\":true,\"max\":1,\"target\":\"${{ steps.comment_target.outputs.pr_number }}\"},\"dispatch_workflow\":{\"aw_context_workflows\":[\"pipeline-analysis-auto-fix\"],\"max\":1,\"workflow_files\":{\"pipeline-analysis-auto-fix\":\".lock.yml\"},\"workflows\":[\"pipeline-analysis-auto-fix\"]},\"noop\":{\"max\":1,\"report-as-issue\":\"false\"}}"
         with:
           github-token: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
           script: |

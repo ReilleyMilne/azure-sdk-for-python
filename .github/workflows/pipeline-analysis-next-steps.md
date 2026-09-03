@@ -42,13 +42,21 @@ on:
               .filter(candidate => candidate.base?.repo?.id === repositoryId)
               .map(candidate => candidate.number)
           )];
-          const pulls = await Promise.all(prNumbers.map(async pullNumber => {
-            const { data: pull } = await github.rest.pulls.get({
-              ...context.repo,
-              pull_number: pullNumber,
-            });
-            return pull;
-          }));
+          const pulls = (await Promise.all(prNumbers.map(async pullNumber => {
+            try {
+              const { data: pull } = await github.rest.pulls.get({
+                ...context.repo,
+                pull_number: pullNumber,
+              });
+              return pull;
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`Ignoring pull request ${pullNumber} because it no longer exists.`);
+                return null;
+              }
+              throw error;
+            }
+          }))).filter(Boolean);
           const matchingPulls = pulls.filter(
             pull => pull.state === "open" && pull.head.sha === suite.head_sha
           );
@@ -225,32 +233,25 @@ jobs:
         uses: actions/github-script@v9.0.0
         with:
           script: |
-            const suite = context.payload.check_suite;
             const repositoryId = context.payload.repository.id;
             const prNumbers = [...new Set(
-              suite.pull_requests
+              context.payload.check_suite.pull_requests
                 .filter(candidate => candidate.base?.repo?.id === repositoryId)
                 .map(candidate => candidate.number)
             )];
-            const pulls = await Promise.all(prNumbers.map(async pullNumber => {
-              const { data: pull } = await github.rest.pulls.get({
-                ...context.repo,
-                pull_number: pullNumber,
-              });
-              return pull;
-            }));
-            const matchingPulls = pulls.filter(
-              pull => pull.state === "open" && pull.head.sha === suite.head_sha
-            );
-            if (matchingPulls.length !== 1) {
+            if (prNumbers.length !== 1) {
               core.setFailed(
-                `Expected exactly one open pull request in ${context.repo.owner}/${context.repo.repo} at ${suite.head_sha}; found ${matchingPulls.length}.`
+                `Expected exactly one pull request in ${context.repo.owner}/${context.repo.repo} from the triggering check suite; found ${prNumbers.length}.`
               );
               return;
             }
-            core.setOutput("pr_number", String(matchingPulls[0].number));
+            core.setOutput("pr_number", String(prNumbers[0]));
 
 safe-outputs:
+  report-failure-as-issue: false
+  report-incomplete: false
+  missing-tool: false
+  missing-data: false
   noop:
     report-as-issue: false
   add-comment:
@@ -292,22 +293,27 @@ safe-outputs:
 
 ## Process
 
-1. Retrieve pull request `${{ needs.pre_activation.outputs.pr_number }}`. If it is not
-  open or its current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
-2. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
+1. If the workflow cannot proceed, including because required data or a required tool is
+  unavailable, call `noop` and stop. Do not report an expected early exit as a workflow failure.
+  Use `noop`, not `missing_tool`, `missing_data`, or `report_incomplete`, for these paths.
+  Retrieve pull request `${{ needs.pre_activation.outputs.pr_number }}`. If it is not open or its
+  current head is not `${{ needs.pre_activation.outputs.head_sha }}`, call `noop` and stop.
+2. Inspect `.github/skills` for repository- or language-specific skills useful for analyzing the
+  failure, and read their `SKILL.md` files before diagnosing it.
+3. Read `.github/skills/azsdk-common-pipeline-analysis/SKILL.md` and its
   `references/failure-patterns.md`, then follow their diagnosis guidance. The deterministic setup
   has already run the CLI analysis, so do not follow the skill's MCP invocation requirement.
-3. Read `pipeline-analysis.json`, which contains the complete JSON output from `azsdk ci analyze`.
+4. Read `pipeline-analysis.json`, which contains the complete JSON output from `azsdk ci analyze`.
   If it contains `No failed Azure Pipeline builds found` or no real failures, call `noop` and stop.
-4. Read `pipeline-test-results.txt`, which contains full failed-test details for every unique
+5. Read `pipeline-test-results.txt`, which contains full failed-test details for every unique
   `artifact_file_path` returned by the analysis. The CLI invocation uses the same
   `GetFailedTestResults` implementation as `azsdk_get_failed_test_run_data`. The exact-case MCP
   tool only performs a case-insensitive title selection over this same full result set, so select
   an exact case from this file when targeted follow-up is needed. Never diagnose or classify
   fixability from test titles alone.
-5. Group evidence by build, platform, artifact file, and failed test. Preserve platform-specific
+6. Group evidence by build, platform, artifact file, and failed test. Preserve platform-specific
   failures when titles overlap, but consolidate failures with one demonstrated root cause.
-6. Categorize the failures and determine whether any are fixable by an automated code change.
+7. Categorize the failures and determine whether any are fixable by an automated code change.
 
 ## Comment format
 
@@ -356,8 +362,6 @@ azsdk ci analyze https://github.com/${{ github.repository }}/pull/${{ needs.pre_
 - Call `publish_analysis` exactly once with the complete analysis and `fixable` if any failure is fixable; otherwise use `non-fixable`.
 - Call `add_comment` exactly once with item number `${{ needs.pre_activation.outputs.pr_number }}` and the same complete analysis.
 - Keep the fix section after the outer `</details>` so it is outside the collapsible analysis.
-- For `fixable`, use the exact requested-status line and hidden authorization marker from the
-  comment format, then call `pipeline_analysis_auto_fix` exactly once with these direct arguments:
-  `pr_number: "${{ needs.pre_activation.outputs.pr_number }}"`,
-  `ci_head_sha: "${{ needs.pre_activation.outputs.head_sha }}"`, and
-  `parent_run_id: "${{ github.run_id }}"`.
+- For `fixable`, use the exact requested-status line from the comment format, then call
+  `dispatch_workflow` exactly once with this structure:
+  `workflow_name: "pipeline-analysis-auto-fix"` and `inputs: { "pr_number": "${{ needs.pre_activation.outputs.pr_number }}", "ci_head_sha": "${{ needs.pre_activation.outputs.head_sha }}", "parent_run_id": "${{ github.run_id }}" }`. Do not place the workflow inputs at the top level.
