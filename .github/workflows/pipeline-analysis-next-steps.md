@@ -113,105 +113,105 @@ pre-agent-steps:
       ./eng/common/mcp/azure-sdk-mcp.ps1 -InstallDirectory $installDirectory
       Add-Content -Path $env:GITHUB_PATH -Value $installDirectory
   - name: Analyze failing pipeline
-    shell: bash
+    uses: actions/github-script@v9.0.0
     env:
-      GITHUB_TOKEN: ${{ github.token }}
-      REPOSITORY: ${{ github.repository }}
-    run: |
-      set -uo pipefail
-      mapfile -t event_context < <(python3 - "$GITHUB_EVENT_PATH" "$REPOSITORY" <<'PY'
-      import json
-      import sys
+      HEAD_SHA: ${{ needs.pre_activation.outputs.head_sha }}
+      PR_NUMBER: ${{ needs.pre_activation.outputs.pr_number }}
+    with:
+      script: |
+        const fs = require("fs");
+        const path = require("path");
 
-      with open(sys.argv[1], encoding="utf-8") as event_file:
-          event = json.load(event_file)
-          suite = event["check_suite"]
+        const logFile = (heading, contents) => {
+          core.info(`----- ${heading} -----`);
+          for (const line of contents.split(/\r?\n/)) {
+            console.log(line.startsWith("::") ? ` ${line}` : line);
+          }
+        };
+        const collectArtifactPaths = (value, paths = new Set()) => {
+          if (Array.isArray(value)) {
+            for (const child of value) {
+              collectArtifactPaths(child, paths);
+            }
+          } else if (value && typeof value === "object") {
+            if (value.artifact_file_path) {
+              paths.add(value.artifact_file_path);
+            }
+            for (const child of Object.values(value)) {
+              collectArtifactPaths(child, paths);
+            }
+          }
+          return paths;
+        };
+        const runAzsdk = async args => {
+          const result = await exec.getExecOutput("azsdk", args, {
+            ignoreReturnCode: true,
+            silent: true,
+          });
+          return {
+            exitCode: result.exitCode,
+            output: `${result.stdout}${result.stderr}`,
+          };
+        };
 
-      print(suite["head_sha"])
-      repository = sys.argv[2]
-      repository_id = event["repository"]["id"]
-      numbers = {
-          pull["number"]
-          for pull in suite["pull_requests"]
-          if pull.get("base", {}).get("repo", {}).get("id") == repository_id
-      }
-      for number in sorted(numbers):
-          print(number)
-      PY
-      )
-      head_sha="${event_context[0]}"
-      matching_prs=()
-      for pr_number in "${event_context[@]:1}"; do
-        pull_json=$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")
-        read -r state pull_head_sha < <(python3 -c \
-          'import json, sys; pull = json.load(sys.stdin); print(pull["state"], pull["head"]["sha"])' \
-          <<< "$pull_json")
-        if [[ "$state" == "open" && "$pull_head_sha" == "$head_sha" ]]; then
-          matching_prs+=("$pr_number")
-        fi
-      done
-      if [[ ${#matching_prs[@]} -ne 1 ]]; then
-        echo "::error::Expected exactly one open pull request in ${REPOSITORY} at ${head_sha}; found ${#matching_prs[@]}."
-        exit 1
-      fi
-      PR_URL="https://github.com/${REPOSITORY}/pull/${matching_prs[0]}"
-      analysis_file="$GITHUB_WORKSPACE/pipeline-analysis.json"
-      test_results_file="$GITHUB_WORKSPACE/pipeline-test-results.txt"
-      exit_code=0
-      azsdk ci analyze "$PR_URL" --output json > "$analysis_file" 2>&1 || exit_code=$?
+        const { data: pull } = await github.rest.pulls.get({
+          ...context.repo,
+          pull_number: Number(process.env.PR_NUMBER),
+        });
+        if (pull.state !== "open" || pull.head.sha !== process.env.HEAD_SHA) {
+          core.setFailed(
+            `Pull request ${process.env.PR_NUMBER} is not open at ${process.env.HEAD_SHA}.`
+          );
+          return;
+        }
 
-      echo "azsdk ci analyze exit code: $exit_code"
-      echo "----- pipeline-analysis.json -----"
-      sed 's/^::/ ::/' "$analysis_file"
-      if [ "$exit_code" -ne 0 ]; then
-        if grep -qF "No failed Azure Pipeline builds found" "$analysis_file"; then
-          echo "No failing Azure Pipeline builds resolved for this PR; the agent will no-op."
-          : > "$test_results_file"
-          exit 0
-        fi
-        echo "::error::azsdk ci analyze failed (exit $exit_code) with an unexpected error."
-        exit "$exit_code"
-      fi
+        const prUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${process.env.PR_NUMBER}`;
+        const analysisFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-analysis.json");
+        const testResultsFile = path.join(process.env.GITHUB_WORKSPACE, "pipeline-test-results.txt");
+        const analysis = await runAzsdk(["ci", "analyze", prUrl, "--output", "json"]);
+        fs.writeFileSync(analysisFile, analysis.output);
 
-      : > "$test_results_file"
-      artifact_files=$(python3 - "$analysis_file" <<'PY'
-      import json
-      import sys
+        core.info(`azsdk ci analyze exit code: ${analysis.exitCode}`);
+        logFile("pipeline-analysis.json", analysis.output);
+        if (analysis.exitCode !== 0) {
+          if (analysis.output.includes("No failed Azure Pipeline builds found")) {
+            core.info("No failing Azure Pipeline builds resolved for this PR; the agent will no-op.");
+            fs.writeFileSync(testResultsFile, "");
+            return;
+          }
+          core.setFailed(`azsdk ci analyze failed (exit ${analysis.exitCode}) with an unexpected error.`);
+          return;
+        }
 
-      def artifact_paths(value):
-          if isinstance(value, dict):
-              path = value.get("artifact_file_path")
-              if path:
-                  yield path
-              for child in value.values():
-                  yield from artifact_paths(child)
-          elif isinstance(value, list):
-              for child in value:
-                  yield from artifact_paths(child)
+        let artifactFiles;
+        try {
+          artifactFiles = [...collectArtifactPaths(JSON.parse(analysis.output))].sort();
+        } catch (error) {
+          core.setFailed(`Failed to parse artifact paths from the pipeline analysis: ${error.message}`);
+          return;
+        }
 
-      with open(sys.argv[1], encoding="utf-8") as analysis:
-          print("\n".join(sorted(set(artifact_paths(json.load(analysis))))))
-      PY
-      ) || {
-        echo "::error::Failed to parse artifact paths from the pipeline analysis."
-        exit 1
-      }
-      while IFS= read -r artifact_file; do
-        [ -n "$artifact_file" ] || continue
-        printf '%s\n' "===== $artifact_file =====" >> "$test_results_file"
-        test_exit_code=0
-        # With neither --titles nor --filter-title, this dispatches to the same
-        # GetFailedTestResults method as azsdk_get_failed_test_run_data.
-        azsdk pkg test results --test-results-file "$artifact_file" --output json \
-          >> "$test_results_file" 2>&1 || test_exit_code=$?
-        if [ "$test_exit_code" -ne 0 ]; then
-          echo "::error::azsdk pkg test results failed for an analysis artifact (exit $test_exit_code)."
-          exit "$test_exit_code"
-        fi
-      done <<< "$artifact_files"
-
-      echo "----- pipeline-test-results.txt -----"
-      sed 's/^::/ ::/' "$test_results_file"
+        let testResults = "";
+        for (const artifactFile of artifactFiles) {
+          testResults += `===== ${artifactFile} =====\n`;
+          // With neither --titles nor --filter-title, this dispatches to the same
+          // GetFailedTestResults method as azsdk_get_failed_test_run_data.
+          const result = await runAzsdk([
+            "pkg", "test", "results",
+            "--test-results-file", artifactFile,
+            "--output", "json",
+          ]);
+          testResults += result.output;
+          if (result.exitCode !== 0) {
+            fs.writeFileSync(testResultsFile, testResults);
+            core.setFailed(
+              `azsdk pkg test results failed for an analysis artifact (exit ${result.exitCode}).`
+            );
+            return;
+          }
+        }
+        fs.writeFileSync(testResultsFile, testResults);
+        logFile("pipeline-test-results.txt", testResults);
 
 tools:
   github:

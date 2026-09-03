@@ -101,10 +101,29 @@ checkout:
 
 post-steps:
   - name: Package fix
-    shell: bash
-    run: |
-      git add -N .
-      git diff --binary --full-index HEAD > /tmp/gh-aw/aw-fix.patch
+    uses: actions/github-script@v9.0.0
+    with:
+      script: |
+        const fs = require("fs");
+        const chunks = [];
+        let exitCode = await exec.exec("git", ["add", "-N", "."]);
+        if (exitCode !== 0) {
+          throw new Error(`git add failed with exit code ${exitCode}.`);
+        }
+        exitCode = await exec.exec(
+          "git",
+          ["diff", "--binary", "--full-index", "HEAD"],
+          {
+            listeners: {
+              stdout: data => chunks.push(Buffer.from(data)),
+            },
+            silent: true,
+          }
+        );
+        if (exitCode !== 0) {
+          throw new Error(`git diff failed with exit code ${exitCode}.`);
+        }
+        fs.writeFileSync("/tmp/gh-aw/aw-fix.patch", Buffer.concat(chunks));
 
 tools:
   edit:
@@ -147,7 +166,7 @@ safe-outputs:
             fetch-depth: 0
         - name: Prepare fix branch
           id: prepare_fix
-          shell: bash
+          uses: actions/github-script@v9.0.0
           env:
             CI_HEAD_SHA: ${{ github.event.inputs.ci_head_sha }}
             FIX_BRANCH: pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}
@@ -156,92 +175,125 @@ safe-outputs:
             GIT_COMMITTER_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
             GIT_COMMITTER_NAME: ${{ github.actor }}
             PR_NUMBER: ${{ github.event.inputs.pr_number }}
-          run: |
-            echo "publish_fix=false" >> "$GITHUB_OUTPUT"
-            mapfile -d '' patches < <(find "$RUNNER_TEMP/gh-aw/safe-jobs" -maxdepth 1 -type f -name 'aw-*.patch' -print0)
-            if [[ ${#patches[@]} -ne 1 ]]; then
-              echo "Expected exactly one staged fix patch, found ${#patches[@]}." >&2
-              exit 1
-            fi
-            patch_size=$(wc -c < "${patches[0]}")
-            if (( patch_size > 4096 * 1024 )); then
-              echo "The fix patch exceeds the 4096 KiB size limit." >&2
-              exit 1
-            fi
+          with:
+            script: |
+              const fs = require("fs");
+              const path = require("path");
 
-            git checkout -b "$FIX_BRANCH" "$CI_HEAD_SHA"
-            git apply --3way --index "${patches[0]}"
-            mapfile -d '' changed_files < <(git diff --cached --name-only --no-renames -z)
-            if [[ ${#changed_files[@]} -eq 0 ]]; then
-              echo "::notice::Skipping publish because the fix patch did not change any files."
-              exit 0
-            fi
-            if (( ${#changed_files[@]} > 100 )); then
-              echo "The fix patch exceeds the 100-file limit." >&2
-              exit 1
-            fi
-            declare -A protected_files=(
-              [AGENTS.md]=1
-              [bunfig.toml]=1
-              [bun.lockb]=1
-              [build.gradle]=1
-              [build.gradle.kts]=1
-              [CHANGELOG.md]=1
-              [CLAUDE.md]=1
-              [CODE_OF_CONDUCT.md]=1
-              [CODEOWNERS]=1
-              [CONTRIBUTING.md]=1
-              [deno.json]=1
-              [deno.jsonc]=1
-              [deno.lock]=1
-              [DESIGN.md]=1
-              [Directory.Packages.props]=1
-              [Gemfile]=1
-              [Gemfile.lock]=1
-              [GEMINI.md]=1
-              [global.json]=1
-              [go.mod]=1
-              [go.sum]=1
-              [gradle.properties]=1
-              [mix.exs]=1
-              [mix.lock]=1
-              [npm-shrinkwrap.json]=1
-              [NuGet.Config]=1
-              [package.json]=1
-              [package-lock.json]=1
-              [Pipfile]=1
-              [Pipfile.lock]=1
-              [pnpm-lock.yaml]=1
-              [pom.xml]=1
-              [pyproject.toml]=1
-              [README.md]=1
-              [requirements.txt]=1
-              [SECURITY.md]=1
-              [settings.gradle]=1
-              [settings.gradle.kts]=1
-              [setup.cfg]=1
-              [setup.py]=1
-              [stack.yaml]=1
-              [stack.yaml.lock]=1
-              [uv.lock]=1
-              [yarn.lock]=1
-            )
-            for changed_file in "${changed_files[@]}"; do
-              file_name=${changed_file##*/}
-              if [[ "$changed_file" == .*/* ||
-                    "$changed_file" == .github/* ||
-                    "$changed_file" == eng/* ||
-                    "$changed_file" == scripts/* ||
-                    "$changed_file" == *.lock ||
-                    "$changed_file" == *requirements*.txt ||
-                    "$changed_file" == */pyproject.toml ||
-                    -n "${protected_files[$file_name]+x}" ]]; then
-                echo "::notice::Skipping publish because the fix changes a protected automation or dependency file: $changed_file"
-                exit 0
-              fi
-            done
-            git commit -m "Fix pipeline failure for #$PR_NUMBER"
-            echo "publish_fix=true" >> "$GITHUB_OUTPUT"
+              const runGit = async args => {
+                const exitCode = await exec.exec("git", args);
+                if (exitCode !== 0) {
+                  throw new Error(`git ${args[0]} failed with exit code ${exitCode}.`);
+                }
+              };
+              const captureGit = async args => {
+                const chunks = [];
+                const exitCode = await exec.exec("git", args, {
+                  listeners: {
+                    stdout: data => chunks.push(Buffer.from(data)),
+                  },
+                  silent: true,
+                });
+                if (exitCode !== 0) {
+                  throw new Error(`git ${args[0]} failed with exit code ${exitCode}.`);
+                }
+                return Buffer.concat(chunks);
+              };
+
+              core.setOutput("publish_fix", "false");
+              const safeJobsDirectory = path.join(process.env.RUNNER_TEMP, "gh-aw", "safe-jobs");
+              const patches = fs.readdirSync(safeJobsDirectory, { withFileTypes: true })
+                .filter(entry => entry.isFile() && /^aw-.*\.patch$/.test(entry.name))
+                .map(entry => path.join(safeJobsDirectory, entry.name));
+              if (patches.length !== 1) {
+                throw new Error(`Expected exactly one staged fix patch, found ${patches.length}.`);
+              }
+              if (fs.statSync(patches[0]).size > 4096 * 1024) {
+                throw new Error("The fix patch exceeds the 4096 KiB size limit.");
+              }
+
+              await runGit(["checkout", "-b", process.env.FIX_BRANCH, process.env.CI_HEAD_SHA]);
+              await runGit(["apply", "--3way", "--index", patches[0]]);
+              const changedFiles = (await captureGit([
+                "diff", "--cached", "--name-only", "--no-renames", "-z",
+              ]))
+                .toString("utf8")
+                .split("\0")
+                .filter(Boolean);
+              if (changedFiles.length === 0) {
+                core.notice("Skipping publish because the fix patch did not change any files.");
+                return;
+              }
+              if (changedFiles.length > 100) {
+                throw new Error("The fix patch exceeds the 100-file limit.");
+              }
+
+              const protectedFiles = new Set([
+                "AGENTS.md",
+                "bunfig.toml",
+                "bun.lockb",
+                "build.gradle",
+                "build.gradle.kts",
+                "CHANGELOG.md",
+                "CLAUDE.md",
+                "CODE_OF_CONDUCT.md",
+                "CODEOWNERS",
+                "CONTRIBUTING.md",
+                "deno.json",
+                "deno.jsonc",
+                "deno.lock",
+                "DESIGN.md",
+                "Directory.Packages.props",
+                "Gemfile",
+                "Gemfile.lock",
+                "GEMINI.md",
+                "global.json",
+                "go.mod",
+                "go.sum",
+                "gradle.properties",
+                "mix.exs",
+                "mix.lock",
+                "npm-shrinkwrap.json",
+                "NuGet.Config",
+                "package.json",
+                "package-lock.json",
+                "Pipfile",
+                "Pipfile.lock",
+                "pnpm-lock.yaml",
+                "pom.xml",
+                "pyproject.toml",
+                "README.md",
+                "requirements.txt",
+                "SECURITY.md",
+                "settings.gradle",
+                "settings.gradle.kts",
+                "setup.cfg",
+                "setup.py",
+                "stack.yaml",
+                "stack.yaml.lock",
+                "uv.lock",
+                "yarn.lock",
+              ]);
+              for (const changedFile of changedFiles) {
+                const fileName = path.posix.basename(changedFile);
+                const changesProtectedFile =
+                  (changedFile.startsWith(".") && changedFile.includes("/")) ||
+                  changedFile.startsWith(".github/") ||
+                  changedFile.startsWith("eng/") ||
+                  changedFile.startsWith("scripts/") ||
+                  changedFile.endsWith(".lock") ||
+                  (changedFile.includes("requirements") && changedFile.endsWith(".txt")) ||
+                  changedFile.endsWith("/pyproject.toml") ||
+                  protectedFiles.has(fileName);
+                if (changesProtectedFile) {
+                  core.notice(
+                    `Skipping publish because the fix changes a protected automation or dependency file: ${changedFile}`
+                  );
+                  return;
+                }
+              }
+              await runGit(["commit", "-m", `Fix pipeline failure for #${process.env.PR_NUMBER}`]);
+              core.setOutput("publish_fix", "true");
         - name: Revalidate pull request
           id: revalidate
           if: steps.prepare_fix.outputs.publish_fix == 'true'
@@ -276,11 +328,18 @@ safe-outputs:
               core.setOutput("publish_fix", "true");
         - name: Publish fix branch
           if: steps.revalidate.outputs.publish_fix == 'true'
-          shell: bash
+          uses: actions/github-script@v9.0.0
           env:
             FIX_BRANCH: pipeline-fix/pr-${{ github.event.inputs.pr_number }}-${{ github.event.inputs.ci_head_sha }}/run-${{ github.run_id }}
-          run: |
-            git push origin "HEAD:refs/heads/$FIX_BRANCH"
+          with:
+            script: |
+              const exitCode = await exec.exec(
+                "git",
+                ["push", "origin", `HEAD:refs/heads/${process.env.FIX_BRANCH}`]
+              );
+              if (exitCode !== 0) {
+                throw new Error(`git push failed with exit code ${exitCode}.`);
+              }
         - name: Update analysis comment
           if: steps.revalidate.outputs.publish_fix == 'true'
           uses: actions/github-script@v9.0.0
