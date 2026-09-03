@@ -1,1 +1,0 @@
-Intentional failure for pipeline analysis workflow validation.
