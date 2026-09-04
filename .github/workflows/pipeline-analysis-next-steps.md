@@ -299,14 +299,15 @@ safe-outputs:
     max: 1
     target: ${{ steps.comment_target.outputs.pr_number }}
     hide-older-comments: true
+  dispatch-workflow:
+    workflows:
+      - pipeline-analysis-auto-fix
+    max: 1
   jobs:
     publish-analysis:
       description: Publish the pipeline analysis and its fixability classification
       runs-on: ubuntu-latest
       needs: safe_outputs
-      permissions:
-        actions: write
-        pull-requests: read
       inputs:
         fixability:
           type: choice
@@ -316,10 +317,8 @@ safe-outputs:
           type: string
           required: true
       steps:
-        - name: Dispatch automatic fix
+        - name: Read analysis
           uses: actions/github-script@v9.0.0
-          env:
-            PARENT_RUN_ID: ${{ github.run_id }}
           with:
             script: |
               const fs = require("fs");
@@ -329,56 +328,6 @@ safe-outputs:
                 core.setFailed("No pipeline analysis was produced.");
                 return;
               }
-              if (item.fixability !== "fixable") {
-                core.info("Skipping automatic fix because the analysis classified the failure as non-fixable.");
-                return;
-              }
-
-              const suite = context.payload.check_suite;
-              const repositoryId = context.payload.repository.id;
-              const prNumbers = [...new Set(
-                suite.pull_requests
-                  .filter(candidate => candidate.base?.repo?.id === repositoryId)
-                  .map(candidate => candidate.number)
-              )];
-              const pulls = (await Promise.all(prNumbers.map(async pullNumber => {
-                try {
-                  const { data: pull } = await github.rest.pulls.get({
-                    ...context.repo,
-                    pull_number: pullNumber,
-                  });
-                  return pull;
-                } catch (error) {
-                  if (error.status === 404) {
-                    core.info(`Ignoring pull request ${pullNumber} because it no longer exists.`);
-                    return null;
-                  }
-                  throw error;
-                }
-              }))).filter(Boolean);
-              const matchingPulls = pulls.filter(
-                pull =>
-                  pull.state === "open" &&
-                  pull.head.sha === suite.head_sha &&
-                  pull.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`
-              );
-              if (matchingPulls.length !== 1) {
-                core.info(
-                  `Skipping automatic fix because ${matchingPulls.length} eligible pull requests point to ${suite.head_sha}; expected exactly one.`
-                );
-                return;
-              }
-
-              await github.rest.actions.createWorkflowDispatch({
-                ...context.repo,
-                workflow_id: "pipeline-analysis-auto-fix.lock.yml",
-                ref: context.ref,
-                inputs: {
-                  pr_number: String(matchingPulls[0].number),
-                  ci_head_sha: suite.head_sha,
-                  parent_run_id: process.env.PARENT_RUN_ID,
-                },
-              });
 ---
 
 # Pipeline Analysis Next Steps
@@ -455,5 +404,6 @@ azsdk ci analyze https://github.com/${{ github.repository }}/pull/${{ needs.pre_
 - Call `publish_analysis` exactly once with the complete analysis and `fixable` if any failure is fixable; otherwise use `non-fixable`.
 - Call `add_comment` exactly once with item number `${{ needs.pre_activation.outputs.pr_number }}` and the same complete analysis.
 - Keep the fix section after the outer `</details>` so it is outside the collapsible analysis.
-- For `fixable`, use the exact requested-status line from the comment format. The trusted
-  `publish_analysis` job dispatches the automatic fix with validated workflow inputs.
+- For `fixable`, use the exact requested-status line from the comment format, then call
+  `pipeline_analysis_auto_fix` exactly once with these inputs:
+  `{ "pr_number": "${{ needs.pre_activation.outputs.pr_number }}", "ci_head_sha": "${{ needs.pre_activation.outputs.head_sha }}", "parent_run_id": "${{ github.run_id }}" }`.
