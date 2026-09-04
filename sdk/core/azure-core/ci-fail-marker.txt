@@ -1,1 +1,2 @@
-Intentional failure for pipeline analysis workflow validation.
+Intentional fixable failure for pipeline analysis workflow validation.
+The expected automated remediation is to delete this marker file.
